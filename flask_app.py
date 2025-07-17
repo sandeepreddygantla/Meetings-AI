@@ -44,7 +44,7 @@ app = Flask(__name__,
 
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max file size
 
 # WFASTCGI FIX: Use database-backed sessions instead of memory/file sessions
 app.config['SECRET_KEY'] = 'your-secret-key-here-' + secrets.token_hex(16)
@@ -784,6 +784,10 @@ def chat():
                     combined_project_ids.extend(project_ids)
                 final_project_id = combined_project_ids[0] if combined_project_ids else None
                 
+                # Detect if this is a summary query to use enhanced context
+                is_summary_query = processor.detect_summary_query(message)
+                context_limit = 100 if is_summary_query else 50
+                
                 response, context = processor.answer_query(
                     message, 
                     user_id=user_id, 
@@ -792,7 +796,7 @@ def chat():
                     meeting_ids=meeting_ids,
                     date_filters=date_filters,
                     folder_path=folder_path,
-                    context_limit=50, 
+                    context_limit=context_limit, 
                     include_context=True
                 )
                 
