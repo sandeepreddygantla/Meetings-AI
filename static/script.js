@@ -2724,79 +2724,34 @@ async function processFiles() {
         if (response.ok) {
             const result = await response.json();
             
-            let successCount = 0;
+            if (result.success && result.job_id) {
+                // Show duplicate files warning if any
+                if (result.duplicates && result.duplicates.length > 0) {
+                    const duplicateNames = result.duplicates.map(d => d.filename).join(', ');
+                    showNotification(`Duplicate files skipped: ${duplicateNames}`, 'warning');
+                }
 
-            if (result.success && result.results && Array.isArray(result.results)) {
-                // Process individual file results
-                result.results.forEach(fileResult => {
-                    const fileObj = uploadedFiles.find(f => f.name === fileResult.filename);
-                    
-                    if (fileObj) {
-                        if (fileResult.success) {
-                            fileObj.status = 'success';
-                            successCount++;
-                        } else {
-                            fileObj.status = 'error';
-                            fileObj.error = fileResult.error || 'Processing failed';
-                        }
-                    } else {
-                        // Try to find by partial match
-                        const partialMatch = uploadedFiles.find(f => 
-                            f.name.includes(fileResult.filename) || fileResult.filename.includes(f.name)
-                        );
-                        if (partialMatch && fileResult.success) {
-                            partialMatch.status = 'success';
-                            successCount++;
-                        }
-                    }
-                });
-            } else if (result.success) {
-                // Fallback: if no individual results but overall success
-                uploadedFiles.forEach(fileObj => {
-                    fileObj.status = 'success';
-                    successCount++;
-                });
-            }
-            
-            // Additional fallback: Use processed count from backend
-            if (successCount === 0 && result.success && result.processed > 0) {
-                uploadedFiles.slice(0, result.processed).forEach(fileObj => {
-                    fileObj.status = 'success';
-                    successCount++;
-                });
-            }
-            
-            if (!result.success) {
-                // Overall failure
+                // Show validation errors if any
+                if (result.validation_errors && result.validation_errors.length > 0) {
+                    const errorFiles = result.validation_errors.map(e => `${e.filename}: ${e.error}`).join(', ');
+                    showNotification(`File validation errors: ${errorFiles}`, 'warning');
+                }
+
+                // Update UI to show processing has started
+                processBtn.innerHTML = 'Processing Files...';
+                
+                // Wait for processing to complete (simplified approach)
+                await waitForProcessingComplete(result.job_id);
+                
+            } else {
+                // Handle immediate failure
                 uploadedFiles.forEach(fileObj => {
                     fileObj.status = 'error';
                     fileObj.error = result.error || 'Upload failed';
                 });
+                updateUploadedFilesList();
+                showNotification(`Upload failed: ${result.error}`, 'error');
             }
-
-            // Update UI with final status
-            updateUploadedFilesList();
-
-            // Refresh stats if any files were processed successfully
-            if (successCount > 0) {
-                await loadSystemStats(true); // Force refresh after upload
-            }
-
-            // Show completion message
-            setTimeout(() => {
-                if (successCount > 0) {
-                    const message = `Successfully processed ${successCount} of ${uploadedFiles.length} documents! Documents are now available for querying.`;
-                    showNotification(message);
-                } else {
-                    const message = `Failed to process any documents. Please check the files and try again.`;
-                    showNotification(message, 'error');
-                }
-                
-                // Only close modal if at least one file was successful
-                if (successCount > 0) {
-                    hideUploadModal();
-                }
-            }, 500);
 
         } else {
             // HTTP error response
@@ -2820,6 +2775,125 @@ async function processFiles() {
         processBtn.disabled = false;
         processBtn.innerHTML = 'Process Files';
     }
+}
+
+// Simplified processing completion check - no progress bar
+async function waitForProcessingComplete(jobId) {
+    const processBtn = document.getElementById('process-btn');
+    
+    return new Promise((resolve) => {
+        const checkInterval = setInterval(async () => {
+            try {
+                const response = await fetch(`/meetingsai/api/job_status/${jobId}`);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    
+                    if (data.success && data.job_status) {
+                        const status = data.job_status;
+                        
+                        // Check if processing is complete
+                        if (status.status === 'completed' || status.status === 'failed' || status.status === 'partial') {
+                            clearInterval(checkInterval);
+                            await handleProcessingComplete(status);
+                            resolve();
+                        }
+                    } else {
+                        // Job not found or error
+                        clearInterval(checkInterval);
+                        handleProcessingError('Failed to check processing status');
+                        resolve();
+                    }
+                } else {
+                    clearInterval(checkInterval);
+                    handleProcessingError('Processing status check failed');
+                    resolve();
+                }
+            } catch (error) {
+                clearInterval(checkInterval);
+                handleProcessingError('Network error during processing');
+                resolve();
+            }
+        }, 3000); // Check every 3 seconds (less frequent)
+    });
+}
+
+// Progress bar functions removed - using simplified approach
+
+// Handle processing completion - simplified version
+async function handleProcessingComplete(status) {
+    const processBtn = document.getElementById('process-btn');
+    
+    // Update file statuses based on results
+    const successCount = status.processed_files || 0;
+    const failedCount = status.failed_files || 0;
+    
+    // Update UI with final status
+    if (successCount > 0) {
+        uploadedFiles.slice(0, successCount).forEach(fileObj => {
+            fileObj.status = 'success';
+        });
+    }
+    
+    if (failedCount > 0) {
+        uploadedFiles.slice(successCount).forEach(fileObj => {
+            fileObj.status = 'error';
+            fileObj.error = 'Processing failed';
+        });
+    }
+    
+    updateUploadedFilesList();
+    
+    // Refresh stats if any files were processed successfully
+    if (successCount > 0) {
+        await loadSystemStats(true);
+    }
+    
+    // Show simple completion message
+    const totalFiles = status.total_files || 0;
+    if (successCount === totalFiles) {
+        // All files processed successfully
+        showNotification(`✅ Successfully processed all ${successCount} documents!`);
+        
+        // Close modal after successful processing
+        setTimeout(() => {
+            hideUploadModal();
+        }, 2000);
+    } else if (successCount > 0) {
+        // Some files failed
+        showNotification(`⚠️ Processed ${successCount} of ${totalFiles} documents. ${failedCount} failed.`, 'warning');
+    } else {
+        // All files failed
+        showNotification(`❌ Failed to process any documents. Please check the files and try again.`, 'error');
+    }
+    
+    // Reset button
+    processBtn.innerHTML = 'Process Files';
+    processBtn.disabled = false;
+}
+
+// Handle processing errors
+function handleProcessingError(message) {
+    const processBtn = document.getElementById('process-btn');
+    const progressContainer = document.getElementById('progress-container');
+    
+    // Remove progress container
+    if (progressContainer) {
+        progressContainer.remove();
+    }
+    
+    // Set all files to error status
+    uploadedFiles.forEach(fileObj => {
+        fileObj.status = 'error';
+        fileObj.error = message || 'Processing failed';
+    });
+    
+    updateUploadedFilesList();
+    showNotification(message || 'Processing failed', 'error');
+    
+    // Reset button
+    processBtn.innerHTML = 'Process Files';
+    processBtn.disabled = false;
 }
 
 let statsCache = null;

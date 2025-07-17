@@ -3,3 +3,16 @@ __pycache__/
 *.pyc
 *.log
 .env
+flask_app.py.backup
+vector_index.faiss
+.vscode/PythonImportHelper-v2-Completion.json
+
+/docs/
+/meeting_documents/
+temp/Document Fulfillment AIML-20250627_150201-Meeting Recording.docx
+temp/Document Fulfillment AIML-20250714_153021-Meeting Recording.docx
+sessions.db
+meeting_documents.db
+/logs/
+
+meeting_documents/

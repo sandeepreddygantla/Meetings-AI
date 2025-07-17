@@ -20,6 +20,9 @@ import faiss
 from collections import defaultdict
 import threading
 import time
+import hashlib
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 
 # Force reload of environment variables
@@ -288,6 +291,68 @@ class VectorDatabase:
             )
         ''')
         
+        # Create file_hashes table for deduplication
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS file_hashes (
+                hash_id TEXT PRIMARY KEY,
+                filename TEXT NOT NULL,
+                original_filename TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                file_hash TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                project_id TEXT,
+                meeting_id TEXT,
+                document_id TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (user_id),
+                FOREIGN KEY (project_id) REFERENCES projects (project_id),
+                FOREIGN KEY (meeting_id) REFERENCES meetings (meeting_id),
+                FOREIGN KEY (document_id) REFERENCES documents (document_id),
+                UNIQUE(file_hash, user_id)
+            )
+        ''')
+        
+        # Create upload_jobs table for tracking background processing
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS upload_jobs (
+                job_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                project_id TEXT,
+                meeting_id TEXT,
+                total_files INTEGER NOT NULL,
+                processed_files INTEGER DEFAULT 0,
+                failed_files INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'pending',
+                error_message TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                started_at TIMESTAMP,
+                completed_at TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (user_id),
+                FOREIGN KEY (project_id) REFERENCES projects (project_id),
+                FOREIGN KEY (meeting_id) REFERENCES meetings (meeting_id)
+            )
+        ''')
+        
+        # Create file_processing_status table for individual file tracking
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS file_processing_status (
+                status_id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                file_hash TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                error_message TEXT,
+                document_id TEXT,
+                chunks_created INTEGER DEFAULT 0,
+                processing_started_at TIMESTAMP,
+                processing_completed_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (job_id) REFERENCES upload_jobs (job_id),
+                FOREIGN KEY (document_id) REFERENCES documents (document_id)
+            )
+        ''')
+        
         # Create indexes for faster searches
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_document_date ON documents(date)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_document_filename ON documents(filename)')
@@ -478,7 +543,6 @@ class VectorDatabase:
         
         # First get all chunks from semantic search
         all_results = self.search_similar_chunks(query_embedding, top_k * 3)  # Get more to filter
-        logger.info(f"🔍 SEMANTIC SEARCH: Got {len(all_results)} chunks before folder filtering")
         
         # Filter results by folder
         filtered_results = []
@@ -499,7 +563,6 @@ class VectorDatabase:
                     break
         
         conn.close()
-        logger.info(f"🔍 SEMANTIC SEARCH: Filtered to {len(filtered_results)} chunks in folder '{folder_path}'")
         return filtered_results
     
     def get_chunks_by_ids(self, chunk_ids: List[str]) -> List[DocumentChunk]:
@@ -534,7 +597,6 @@ class VectorDatabase:
     
     def get_documents_by_timeframe(self, timeframe: str, user_id: str = None) -> List[MeetingDocument]:
         """Get documents filtered by intelligent timeframe calculation"""
-        logger.info(f"Getting documents by timeframe: {timeframe}")
         
         # Calculate date range using intelligent calendar logic
         start_date, end_date = self._calculate_date_range(timeframe)
@@ -543,7 +605,6 @@ class VectorDatabase:
             logger.warning(f"Unknown timeframe: {timeframe}, returning all documents")
             return list(self.document_metadata.values())
         
-        logger.info(f"Date range calculated: {start_date} to {end_date}")
         
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -598,7 +659,6 @@ class VectorDatabase:
             documents.append(doc)
         
         conn.close()
-        logger.info(f"Found {len(documents)} documents in timeframe {timeframe}")
         return documents
     
     def _calculate_date_range(self, timeframe: str) -> Tuple[Optional[datetime], Optional[datetime]]:
@@ -724,7 +784,6 @@ class VectorDatabase:
     
     def _generate_date_based_summary(self, query: str, documents: List[Any], timeframe: str, include_context: bool = False) -> Union[str, Tuple[str, str]]:
         """Generate intelligent date-based summary with chronological organization"""
-        logger.info(f"Generating date-based summary for {len(documents)} documents in {timeframe} timeframe")
         
         # Sort documents by date
         sorted_docs = sorted(documents, key=lambda x: x.date)
@@ -992,7 +1051,6 @@ class VectorDatabase:
     
     def keyword_search_chunks_by_folder(self, keywords: List[str], user_id: str, folder_path: str, limit: int = 50) -> List[str]:
         """Perform keyword search on chunk content filtered by user and folder"""
-        logger.info(f"🔍 KEYWORD SEARCH: Searching for {keywords} in folder '{folder_path}'")
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -1021,7 +1079,6 @@ class VectorDatabase:
         chunk_ids = [row[0] for row in cursor.fetchall()]
         
         conn.close()
-        logger.info(f"🔍 KEYWORD SEARCH: Found {len(chunk_ids)} chunks in folder '{folder_path}'")
         return chunk_ids
     
     # User Management Methods
@@ -1462,6 +1519,223 @@ class VectorDatabase:
         if self.index:
             faiss.write_index(self.index, self.index_path)
             logger.info(f"Saved FAISS index with {self.index.ntotal} vectors")
+    
+    # File Deduplication Methods
+    def calculate_file_hash(self, file_path: str) -> str:
+        """Calculate SHA-256 hash of a file"""
+        hasher = hashlib.sha256()
+        try:
+            with open(file_path, 'rb') as f:
+                for chunk in iter(lambda: f.read(4096), b""):
+                    hasher.update(chunk)
+            return hasher.hexdigest()
+        except Exception as e:
+            logger.error(f"Error calculating hash for {file_path}: {e}")
+            raise
+
+    def is_file_duplicate(self, file_hash: str, filename: str, user_id: str) -> Optional[Dict]:
+        """Check if file is a duplicate based on hash and return original file info"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                SELECT hash_id, filename, original_filename, created_at, document_id
+                FROM file_hashes 
+                WHERE file_hash = ? AND user_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+            ''', (file_hash, user_id))
+            
+            result = cursor.fetchone()
+            if result:
+                return {
+                    'hash_id': result[0],
+                    'filename': result[1],
+                    'original_filename': result[2],
+                    'created_at': result[3],
+                    'document_id': result[4]
+                }
+            return None
+        finally:
+            conn.close()
+
+    def store_file_hash(self, file_hash: str, filename: str, original_filename: str, 
+                       file_size: int, user_id: str, project_id: str = None, 
+                       meeting_id: str = None, document_id: str = None) -> str:
+        """Store file hash for deduplication"""
+        hash_id = f"hash_{uuid.uuid4().hex[:8]}"
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                INSERT INTO file_hashes 
+                (hash_id, filename, original_filename, file_size, file_hash, 
+                 user_id, project_id, meeting_id, document_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (hash_id, filename, original_filename, file_size, file_hash, 
+                  user_id, project_id, meeting_id, document_id))
+            conn.commit()
+            return hash_id
+        except sqlite3.IntegrityError:
+            logger.warning(f"File hash {file_hash} already exists for user {user_id}")
+            raise
+        finally:
+            conn.close()
+
+    # Background Processing Methods
+    def create_upload_job(self, user_id: str, total_files: int, project_id: str = None, 
+                         meeting_id: str = None) -> str:
+        """Create a new upload job for tracking progress"""
+        job_id = f"job_{uuid.uuid4().hex[:8]}"
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                INSERT INTO upload_jobs 
+                (job_id, user_id, project_id, meeting_id, total_files, status)
+                VALUES (?, ?, ?, ?, ?, 'pending')
+            ''', (job_id, user_id, project_id, meeting_id, total_files))
+            conn.commit()
+            logger.info(f"Created upload job {job_id} for {total_files} files")
+            return job_id
+        finally:
+            conn.close()
+
+    def get_job_status(self, job_id: str) -> Optional[Dict]:
+        """Get current job status and progress"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                SELECT job_id, user_id, project_id, meeting_id, total_files, 
+                       processed_files, failed_files, status, error_message,
+                       created_at, started_at, completed_at
+                FROM upload_jobs 
+                WHERE job_id = ?
+            ''', (job_id,))
+            
+            result = cursor.fetchone()
+            if result:
+                return {
+                    'job_id': result[0],
+                    'user_id': result[1],
+                    'project_id': result[2],
+                    'meeting_id': result[3],
+                    'total_files': result[4],
+                    'processed_files': result[5],
+                    'failed_files': result[6],
+                    'status': result[7],
+                    'error_message': result[8],
+                    'created_at': result[9],
+                    'started_at': result[10],
+                    'completed_at': result[11],
+                    'progress_percent': (result[5] / result[4]) * 100 if result[4] > 0 else 0
+                }
+            return None
+        finally:
+            conn.close()
+
+    def update_job_status(self, job_id: str, status: str, processed_files: int = None, 
+                         failed_files: int = None, error_message: str = None):
+        """Update job status and progress"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            update_fields = ['status = ?']
+            params = [status]
+            
+            if processed_files is not None:
+                update_fields.append('processed_files = ?')
+                params.append(processed_files)
+            
+            if failed_files is not None:
+                update_fields.append('failed_files = ?')
+                params.append(failed_files)
+            
+            if error_message is not None:
+                update_fields.append('error_message = ?')
+                params.append(error_message)
+            
+            if status == 'processing':
+                update_fields.append('started_at = CURRENT_TIMESTAMP')
+            elif status in ['completed', 'failed']:
+                update_fields.append('completed_at = CURRENT_TIMESTAMP')
+            
+            params.append(job_id)
+            
+            cursor.execute(f'''
+                UPDATE upload_jobs 
+                SET {', '.join(update_fields)}
+                WHERE job_id = ?
+            ''', params)
+            
+            conn.commit()
+            logger.info(f"Updated job {job_id} status to {status}")
+        finally:
+            conn.close()
+
+    def create_file_processing_status(self, job_id: str, filename: str, file_size: int, 
+                                    file_hash: str) -> str:
+        """Create individual file processing status"""
+        status_id = f"status_{uuid.uuid4().hex[:8]}"
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                INSERT INTO file_processing_status 
+                (status_id, job_id, filename, file_size, file_hash, status)
+                VALUES (?, ?, ?, ?, ?, 'pending')
+            ''', (status_id, job_id, filename, file_size, file_hash))
+            conn.commit()
+            return status_id
+        finally:
+            conn.close()
+
+    def update_file_processing_status(self, status_id: str, status: str, 
+                                    error_message: str = None, document_id: str = None, 
+                                    chunks_created: int = None):
+        """Update individual file processing status"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            update_fields = ['status = ?']
+            params = [status]
+            
+            if error_message is not None:
+                update_fields.append('error_message = ?')
+                params.append(error_message)
+            
+            if document_id is not None:
+                update_fields.append('document_id = ?')
+                params.append(document_id)
+            
+            if chunks_created is not None:
+                update_fields.append('chunks_created = ?')
+                params.append(chunks_created)
+            
+            if status == 'processing':
+                update_fields.append('processing_started_at = CURRENT_TIMESTAMP')
+            elif status in ['completed', 'failed']:
+                update_fields.append('processing_completed_at = CURRENT_TIMESTAMP')
+            
+            params.append(status_id)
+            
+            cursor.execute(f'''
+                UPDATE file_processing_status 
+                SET {', '.join(update_fields)}
+                WHERE status_id = ?
+            ''', params)
+            
+            conn.commit()
+        finally:
+            conn.close()
 
 class EnhancedMeetingDocumentProcessor:
     """Enhanced Meeting Document Processor with Vector Database Support"""
@@ -1531,7 +1805,6 @@ class EnhancedMeetingDocumentProcessor:
     
     def _generate_date_based_summary(self, query: str, documents: List[Any], timeframe: str, include_context: bool = False) -> Union[str, Tuple[str, str]]:
         """Generate intelligent date-based summary with chronological organization"""
-        logger.info(f"Generating date-based summary for {len(documents)} documents in {timeframe} timeframe")
         
         # Sort documents by date
         sorted_docs = sorted(documents, key=lambda x: x.date)
@@ -1645,7 +1918,7 @@ class EnhancedMeetingDocumentProcessor:
             if not current_api_key:
                 raise ValueError("OPENAI_API_KEY not found in environment")
             
-            logger.info(f"Refreshing with API key: {current_api_key[:15]}...{current_api_key[-10:]}")
+            logger.info("Refreshing LLM client with new API key")
             
             # For OpenAI, we don't need to refresh tokens since we use API keys
             # But we can recreate the clients if needed
@@ -1756,7 +2029,7 @@ class EnhancedMeetingDocumentProcessor:
             # Fallback to truncated content
             return content[:max_length] + "..." if len(content) > max_length else content
     
-    def parse_document_content(self, content: str, filename: str) -> MeetingDocument:
+    def parse_document_content(self, content: str, filename: str, user_id: str, project_id: str = None, meeting_id: str = None) -> MeetingDocument:
         """Parse a meeting document and extract structured information"""
         doc_date = self.extract_date_from_filename(filename)
         document_id = f"{filename}_{doc_date.strftime('%Y%m%d_%H%M%S')}"
@@ -1808,14 +2081,17 @@ class EnhancedMeetingDocumentProcessor:
                 past_events=parsed_data.get('past_events', []),
                 future_actions=parsed_data.get('future_actions', []),
                 participants=parsed_data.get('participants', []),
-                file_size=len(content)
+                file_size=len(content),
+                user_id=user_id,
+                project_id=project_id,
+                meeting_id=meeting_id
             )
             
         except Exception as e:
             logger.error(f"Error parsing document {filename}: {e}")
-            return self._create_fallback_document(content, filename, doc_date, document_id)
+            return self._create_fallback_document(content, filename, doc_date, document_id, user_id, project_id, meeting_id)
     
-    def _create_fallback_document(self, content: str, filename: str, doc_date: datetime, document_id: str) -> MeetingDocument:
+    def _create_fallback_document(self, content: str, filename: str, doc_date: datetime, document_id: str, user_id: str, project_id: str = None, meeting_id: str = None) -> MeetingDocument:
         """Create a fallback document when parsing fails"""
         content_summary = self.create_content_summary(content)
         
@@ -1830,7 +2106,10 @@ class EnhancedMeetingDocumentProcessor:
             past_events=[],
             future_actions=[],
             participants=[],
-            file_size=len(content)
+            file_size=len(content),
+            user_id=user_id,
+            project_id=project_id,
+            meeting_id=meeting_id
         )
     
     def chunk_document(self, document: MeetingDocument) -> List[DocumentChunk]:
@@ -1894,7 +2173,6 @@ class EnhancedMeetingDocumentProcessor:
         for ext in supported_extensions:
             doc_files.extend(folder_path.glob(f"*{ext}"))
         
-        logger.info(f"Found {len(doc_files)} documents to process...")
         
         processed_count = 0
         for doc_file in doc_files:
@@ -2044,8 +2322,6 @@ class EnhancedMeetingDocumentProcessor:
             if folder_path:
                 # Use folder-based filtering ONLY - don't mix with project/meeting filters
                 document_ids = self.vector_db.get_user_documents_by_folder(user_id, folder_path)
-                logger.info(f"🔍 FOLDER FILTERING: Including {len(document_ids)} documents from folder '{folder_path}' for user {user_id}")
-                logger.info(f"🔍 FOLDER FILTERING: Document IDs: {document_ids}")
             else:
                 # Use standard scope-based filtering
                 document_ids = self.vector_db.get_user_documents_by_scope(user_id, project_id, meeting_id)
@@ -2077,16 +2353,12 @@ class EnhancedMeetingDocumentProcessor:
                 return self._generate_date_based_summary(query, timeframe_docs, detected_timeframe, include_context)
         
         # Perform hybrid search
-        if folder_path:
-            logger.info(f"🔍 HYBRID SEARCH: Searching with folder filter '{folder_path}'")
         relevant_chunks = self.hybrid_search(query, user_id, project_id, meeting_id, folder_path, top_k=context_limit * 3)
-        logger.info(f"🔍 HYBRID SEARCH: Found {len(relevant_chunks)} relevant chunks")
         
         # Filter chunks by document IDs if specified
         if document_ids:  # Temporarily disabled @ feature
             original_count = len(relevant_chunks)
             relevant_chunks = [chunk for chunk in relevant_chunks if chunk.document_id in document_ids]
-            logger.info(f"🔍 DOCUMENT FILTERING: Filtered from {original_count} to {len(relevant_chunks)} chunks based on document IDs")
             if not relevant_chunks:
                 error_msg = "I don't have any relevant information in the specified documents for your question."
                 return (error_msg, "") if include_context else error_msg
@@ -2449,7 +2721,269 @@ Participants: {chunk['participants']}
         
         return "\n".join(formatted_content)
 
-    
+    # File Deduplication Methods
+    def calculate_file_hash(self, file_path: str) -> str:
+        """Calculate SHA-256 hash of a file"""
+        hasher = hashlib.sha256()
+        try:
+            with open(file_path, 'rb') as f:
+                for chunk in iter(lambda: f.read(4096), b""):
+                    hasher.update(chunk)
+            return hasher.hexdigest()
+        except Exception as e:
+            logger.error(f"Error calculating hash for {file_path}: {e}")
+            raise
+
+    def is_file_duplicate(self, file_hash: str, filename: str, user_id: str) -> Optional[Dict]:
+        """Check if file is a duplicate based on hash and return original file info"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                SELECT hash_id, filename, original_filename, created_at, document_id
+                FROM file_hashes 
+                WHERE file_hash = ? AND user_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+            ''', (file_hash, user_id))
+            
+            result = cursor.fetchone()
+            if result:
+                return {
+                    'hash_id': result[0],
+                    'filename': result[1],
+                    'original_filename': result[2],
+                    'created_at': result[3],
+                    'document_id': result[4]
+                }
+            return None
+        finally:
+            conn.close()
+
+    def store_file_hash(self, file_hash: str, filename: str, original_filename: str, 
+                       file_size: int, user_id: str, project_id: str = None, 
+                       meeting_id: str = None, document_id: str = None) -> str:
+        """Store file hash for deduplication"""
+        hash_id = f"hash_{uuid.uuid4().hex[:8]}"
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                INSERT INTO file_hashes 
+                (hash_id, filename, original_filename, file_size, file_hash, 
+                 user_id, project_id, meeting_id, document_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (hash_id, filename, original_filename, file_size, file_hash, 
+                  user_id, project_id, meeting_id, document_id))
+            conn.commit()
+            return hash_id
+        except sqlite3.IntegrityError:
+            logger.warning(f"File hash {file_hash} already exists for user {user_id}")
+            raise
+        finally:
+            conn.close()
+
+    # Background Processing Methods
+    def create_upload_job(self, user_id: str, total_files: int, project_id: str = None, 
+                         meeting_id: str = None) -> str:
+        """Create a new upload job for tracking progress"""
+        job_id = f"job_{uuid.uuid4().hex[:8]}"
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                INSERT INTO upload_jobs 
+                (job_id, user_id, project_id, meeting_id, total_files, status)
+                VALUES (?, ?, ?, ?, ?, 'pending')
+            ''', (job_id, user_id, project_id, meeting_id, total_files))
+            conn.commit()
+            logger.info(f"Created upload job {job_id} for {total_files} files")
+            return job_id
+        finally:
+            conn.close()
+
+    def process_file_async(self, file_path: str, filename: str, user_id: str, 
+                          project_id: str = None, meeting_id: str = None, 
+                          job_id: str = None, status_id: str = None) -> Dict:
+        """Process a single file asynchronously"""
+        try:
+            # Calculate file hash
+            file_hash = self.vector_db.calculate_file_hash(file_path)
+            file_size = os.path.getsize(file_path)
+            
+            # Check for duplicates
+            duplicate_info = self.vector_db.is_file_duplicate(file_hash, filename, user_id)
+            if duplicate_info:
+                logger.info(f"File {filename} is a duplicate of {duplicate_info['original_filename']}")
+                return {
+                    'success': False,
+                    'is_duplicate': True,
+                    'duplicate_info': duplicate_info,
+                    'message': f"File is a duplicate of {duplicate_info['original_filename']}"
+                }
+            
+            # Update file processing status
+            if status_id:
+                self.vector_db.update_file_processing_status(status_id, 'processing')
+            
+            # Process the file
+            logger.info(f"Processing file: {filename}")
+            
+            # Read document content
+            content = self.read_document_content(file_path)
+            if not content.strip():
+                error_msg = f"No content extracted from {filename}"
+                if status_id:
+                    self.vector_db.update_file_processing_status(status_id, 'failed', error_msg)
+                return {'success': False, 'error': error_msg}
+            
+            # Parse document
+            meeting_doc = self.parse_document_content(content, filename, user_id, project_id, meeting_id)
+            
+            # Create chunks with embeddings
+            chunks = self.chunk_document(meeting_doc)
+            
+            # Store in database
+            self.vector_db.add_document(meeting_doc, chunks)
+            
+            # Store file hash
+            self.vector_db.store_file_hash(file_hash, filename, filename, file_size, 
+                               user_id, project_id, meeting_id, meeting_doc.document_id)
+            
+            # Update file processing status
+            if status_id:
+                self.vector_db.update_file_processing_status(status_id, 'completed', 
+                                                 document_id=meeting_doc.document_id, 
+                                                 chunks_created=len(chunks))
+            
+            logger.info(f"Successfully processed {filename} with {len(chunks)} chunks")
+            return {
+                'success': True,
+                'document_id': meeting_doc.document_id,
+                'chunks_created': len(chunks),
+                'message': f"Successfully processed {filename}"
+            }
+            
+        except Exception as e:
+            error_msg = f"Error processing {filename}: {str(e)}"
+            logger.error(error_msg)
+            if status_id:
+                self.vector_db.update_file_processing_status(status_id, 'failed', error_msg)
+            return {'success': False, 'error': error_msg}
+
+    def process_files_batch_async(self, files: List[Dict], user_id: str, 
+                                 project_id: str = None, meeting_id: str = None, 
+                                 max_workers: int = 3, job_id: str = None) -> Dict:
+        """Process multiple files asynchronously with threading"""
+        if not files:
+            return {'success': False, 'error': 'No files provided'}
+        
+        # Create upload job if not provided
+        if job_id is None:
+            job_id = self.vector_db.create_upload_job(user_id, len(files), project_id, meeting_id)
+        
+        # Create file processing status entries
+        file_tasks = []
+        for file_info in files:
+            file_hash = self.vector_db.calculate_file_hash(file_info['path'])
+            file_size = os.path.getsize(file_info['path'])
+            
+            # Check for duplicates first
+            duplicate_info = self.vector_db.is_file_duplicate(file_hash, file_info['filename'], user_id)
+            if duplicate_info:
+                logger.info(f"Skipping duplicate file: {file_info['filename']}")
+                continue
+            
+            status_id = self.vector_db.create_file_processing_status(job_id, file_info['filename'], 
+                                                         file_size, file_hash)
+            file_tasks.append({
+                'file_path': file_info['path'],
+                'filename': file_info['filename'],
+                'status_id': status_id,
+                'file_hash': file_hash
+            })
+        
+        if not file_tasks:
+            self.vector_db.update_job_status(job_id, 'completed', 0, 0)
+            return {
+                'success': True,
+                'job_id': job_id,
+                'message': 'All files were duplicates, no processing needed'
+            }
+        
+        # Update job with actual file count after deduplication
+        self.vector_db.update_job_status(job_id, 'processing')
+        
+        # Process files concurrently
+        results = []
+        processed_count = 0
+        failed_count = 0
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_task = {
+                executor.submit(
+                    self.process_file_async,
+                    task['file_path'],
+                    task['filename'],
+                    user_id,
+                    project_id,
+                    meeting_id,
+                    job_id,
+                    task['status_id']
+                ): task for task in file_tasks
+            }
+            
+            # Process completed tasks
+            for future in as_completed(future_to_task):
+                task = future_to_task[future]
+                try:
+                    result = future.result()
+                    results.append({
+                        'filename': task['filename'],
+                        'result': result
+                    })
+                    
+                    if result['success']:
+                        processed_count += 1
+                    else:
+                        failed_count += 1
+                        
+                    # Update job progress
+                    self.vector_db.update_job_status(job_id, 'processing', processed_count, failed_count)
+                    
+                except Exception as e:
+                    logger.error(f"Error processing {task['filename']}: {e}")
+                    failed_count += 1
+                    results.append({
+                        'filename': task['filename'],
+                        'result': {'success': False, 'error': str(e)}
+                    })
+                    self.vector_db.update_job_status(job_id, 'processing', processed_count, failed_count)
+        
+        # Update final job status
+        final_status = 'completed' if failed_count == 0 else 'partial' if processed_count > 0 else 'failed'
+        self.vector_db.update_job_status(job_id, final_status, processed_count, failed_count)
+        
+        # Save vector index if any files were processed successfully
+        if processed_count > 0:
+            self.vector_db.save_index()
+            logger.info(f"Saved FAISS index after processing {processed_count} documents")
+        
+        logger.info(f"Batch processing completed. Job: {job_id}, "
+                   f"Processed: {processed_count}, Failed: {failed_count}")
+        
+        return {
+            'success': True,
+            'job_id': job_id,
+            'processed_files': processed_count,
+            'failed_files': failed_count,
+            'total_files': len(file_tasks),
+            'results': results
+        }
 
 def main():
     """Main function for Meeting Document AI System with OpenAI"""

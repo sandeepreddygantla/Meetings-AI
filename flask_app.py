@@ -234,7 +234,6 @@ def initialize_processor():
         return True
     except Exception as e:
         logger.error(f"Failed to initialize processor: {e}")
-        logger.exception("Full exception traceback:")
         return False
 
 # Initialize directories and processor when module loads (for IIS deployment)
@@ -267,7 +266,6 @@ def setup_application():
                     logger.error("Failed to initialize processor for IIS")
             except Exception as e:
                 logger.error(f"Exception during processor initialization: {e}")
-                logger.exception("Full processor initialization traceback:")
         else:
             logger.info("Processor already initialized")
             
@@ -276,7 +274,6 @@ def setup_application():
         
     except Exception as e:
         logger.error(f"Critical error during application setup: {e}")
-        logger.exception("Full application setup traceback:")
 
 # Setup application on module load - only if not already setup
 if not _application_initialized:
@@ -331,72 +328,15 @@ def load_user(user_id):
         logger.error(f"Error loading user {user_id}: {e}")
         return None
 
-def initialize_processor():
-    """Initialize the document processor"""
-    global processor
-    try:
-        logger.info("Initializing Enhanced Meeting Document Processor...")
-        logger.info(f"Current working directory: {os.getcwd()}")
-        
-        # Check if we can import the processor class
-        try:
-            logger.info("Creating processor instance...")
-            processor = EnhancedMeetingDocumentProcessor(chunk_size=1000, chunk_overlap=200)
-            logger.info("Processor instance created successfully")
-        except Exception as proc_error:
-            logger.error(f"Failed to create processor instance: {proc_error}")
-            logger.exception("Processor creation traceback:")
-            return False
-        
-        # Ensure databases are properly initialized
-        if processor:
-            logger.info("Checking processor vector_db...")
-            if processor.vector_db:
-                logger.info("Vector DB exists, initializing database schema...")
-                
-                # Initialize the database schema if needed
-                try:
-                    # Force database initialization by creating tables
-                    processor.vector_db._init_database()
-                    logger.info("Database schema initialized successfully")
-                except Exception as db_error:
-                    logger.error(f"Database initialization error: {db_error}")
-                    logger.exception("Database initialization traceback:")
-                    # Continue anyway, might work
-                
-                # Clean up expired sessions on startup
-                try:
-                    cleaned_count = processor.vector_db.cleanup_expired_sessions()
-                    logger.info(f"Cleaned up {cleaned_count} expired sessions on startup")
-                except Exception as cleanup_error:
-                    logger.error(f"Session cleanup error: {cleanup_error}")
-                    logger.exception("Session cleanup traceback:")
-                    # Continue anyway
-            else:
-                logger.error("Processor vector_db is None!")
-                return False
-        else:
-            logger.error("Processor is None after creation!")
-            return False
-        
-        logger.info("Processor initialized successfully")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to initialize processor: {e}")
-        logger.exception("Full exception traceback:")
-        return False
-
 # Authentication Routes
 @app.route('/meetingsai/register', methods=['GET', 'POST'])
 def register():
     """User registration"""
-    logger.info(f"Registration request received - Method: {request.method}")
     
     if request.method == 'GET':
         return render_template('register.html')
     
     try:
-        logger.info("Processing POST registration request")
         
         # Check if processor is available
         if not processor:
@@ -409,7 +349,6 @@ def register():
             logger.error("No JSON data received in registration request")
             return jsonify({'success': False, 'error': 'Invalid request data'}), 400
         
-        logger.info(f"Registration data received for user: {data.get('username', 'unknown')}")
         
         username = data.get('username', '').strip()
         email = data.get('email', '').strip()
@@ -430,34 +369,27 @@ def register():
             logger.warning("Registration failed - password too short")
             return jsonify({'success': False, 'error': 'Password must be at least 6 characters'}), 400
         
-        logger.info("Starting user creation process")
         
         # Hash password
         try:
             password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-            logger.info("Password hashed successfully")
         except Exception as e:
             logger.error(f"Password hashing failed: {e}")
             return jsonify({'success': False, 'error': 'Password processing failed'}), 500
         
         # Create user
         try:
-            logger.info("Creating user in database")
             user_id = processor.vector_db.create_user(username, email, full_name, password_hash)
             logger.info(f"User created with ID: {user_id}")
         except Exception as e:
             logger.error(f"User creation failed: {e}")
-            logger.exception("Full traceback:")
             return jsonify({'success': False, 'error': f'User creation failed: {str(e)}'}), 500
         
         # Create default project
         try:
-            logger.info("Creating default project")
             project_id = processor.vector_db.create_project(user_id, "Default Project", "Default project for meetings")
-            logger.info(f"Default project created with ID: {project_id}")
         except Exception as e:
             logger.error(f"Default project creation failed: {e}")
-            logger.exception("Full traceback:")
             # Don't fail registration if project creation fails
             project_id = None
         
@@ -473,27 +405,21 @@ def register():
         return jsonify({'success': False, 'error': str(e)}), 400
     except Exception as e:
         logger.error(f"Registration error: {e}")
-        logger.exception("Full registration error traceback:")
         return jsonify({'success': False, 'error': f'Registration failed: {str(e)}'}), 500
 
 @app.route('/meetingsai/login', methods=['GET', 'POST'])
 def login():
     """User login"""
-    logger.info(f"Login request received - Method: {request.method}")
     
     if request.method == 'GET':
-        logger.info(f"Login GET request - User Agent: {request.headers.get('User-Agent', 'Unknown')}")
-        logger.info(f"Login GET request - Referer: {request.headers.get('Referer', 'None')}")
         return render_template('login.html')
     
     try:
-        logger.info("Processing POST login request")
         
         data = request.get_json()
         username = data.get('username', '').strip()
         password = data.get('password', '')
         
-        logger.info(f"Login attempt for user: {username}")
         
         if not username or not password:
             logger.warning("Login failed - missing credentials")
@@ -503,14 +429,12 @@ def login():
         if not processor:
             logger.error("Processor not initialized during login")
             # Try to re-initialize
-            logger.info("Attempting to re-initialize processor for login...")
             if initialize_processor():
                 logger.info("Processor re-initialized successfully")
             else:
                 logger.error("Failed to re-initialize processor")
                 return jsonify({'success': False, 'error': 'System not initialized - database connection failed. Please contact administrator.'}), 500
         
-        logger.info("Getting user from database")
         
         # Get user
         user = processor.vector_db.get_user_by_username(username)
@@ -518,26 +442,22 @@ def login():
             logger.warning(f"User not found: {username}")
             return jsonify({'success': False, 'error': 'Invalid username or password'}), 401
         
-        logger.info(f"User found: {username}, checking password")
         
         # Check password
         if not bcrypt.checkpw(password.encode('utf-8'), user.password_hash.encode('utf-8')):
             logger.warning(f"Invalid password for user: {username}")
             return jsonify({'success': False, 'error': 'Invalid username or password'}), 401
         
-        logger.info(f"Password valid for user: {username}, creating session")
         
         # Login user with permanent session
         flask_user = User(user.user_id, user.username, user.email, user.full_name)
         login_user(flask_user, remember=True)
         session.permanent = True  # Make session permanent
         
-        logger.info(f"Session created for user: {username}")
         
         # Update last login
         try:
             processor.vector_db.update_user_last_login(user.user_id)
-            logger.info(f"Last login updated for user: {username}")
         except Exception as e:
             logger.error(f"Failed to update last login: {e}")
             # Don't fail login for this
@@ -556,7 +476,6 @@ def login():
         
     except Exception as e:
         logger.error(f"Login error: {e}")
-        logger.exception("Full login error traceback:")
         return jsonify({'success': False, 'error': f'Login failed: {str(e)}'}), 500
 
 @app.route('/meetingsai/logout', methods=['POST'])
@@ -572,16 +491,12 @@ def logout():
 def auth_status():
     """Check authentication status and validate session"""
     try:
-        logger.info("=== AUTH STATUS ENDPOINT CALLED ===")
-        logger.info(f"Auth status check - authenticated: {current_user.is_authenticated}")
         
         if current_user.is_authenticated:
-            logger.info(f"User authenticated: {current_user.username}")
             
             # Always return authenticated if user has valid session - don't check database
             # This prevents logout loops when database/processor has issues
             session.permanent = True
-            logger.info(f"Auth status valid for user: {current_user.username}")
             
             return jsonify({
                 'authenticated': True,
@@ -593,36 +508,29 @@ def auth_status():
                 }
             })
         else:
-            logger.info("User not authenticated")
             return jsonify({'authenticated': False, 'reason': 'not_logged_in'}), 401
             
     except Exception as e:
         logger.error(f"Auth status check error: {e}")
-        logger.exception("Full auth status error traceback:")
         return jsonify({'authenticated': False, 'reason': 'validation_error'}), 401
 
 @app.route('/meetingsai/')
 @app.route('/meetingsai')
 def index():
     """Main chat interface - authentication handled by frontend"""
-    logger.info("Main index route accessed")
     # Let the frontend handle authentication check to support persistent sessions
     # This prevents immediate redirect on page refresh, allowing JS to validate session
     try:
-        logger.info("Attempting to render chat.html template")
         return render_template('chat.html')
     except Exception as e:
         logger.error(f"Error rendering chat.html: {e}")
-        logger.exception("Template rendering error:")
         return f"Error loading chat interface: {str(e)}", 500
 
 @app.route('/meetingsai/api/upload', methods=['POST'])
 @login_required
 def upload_files():
-    """Handle file uploads with detailed result tracking"""
+    """Handle file uploads with asynchronous processing and deduplication"""
     try:
-        logger.info("Upload request received")
-        
         if 'files' not in request.files:
             logger.error("No files in request")
             return jsonify({'success': False, 'error': 'No files provided'}), 400
@@ -634,7 +542,7 @@ def upload_files():
         
         # Get project selection from form data
         project_id = request.form.get('project_id', '').strip()
-        logger.info(f"Project selection: {project_id}")
+        meeting_id = request.form.get('meeting_id', '').strip()
         
         if not processor:
             logger.error("Processor not initialized")
@@ -647,178 +555,191 @@ def upload_files():
             if not project_exists:
                 return jsonify({'success': False, 'error': 'Invalid project selection'}), 400
         
-        logger.info(f"Processing {len(files)} files for project {project_id or 'default'}")
+        # Validate meeting belongs to user and project
+        if meeting_id:
+            user_meetings = processor.vector_db.get_user_meetings(current_user.user_id, project_id)
+            meeting_exists = any(m.meeting_id == meeting_id for m in user_meetings)
+            if not meeting_exists:
+                return jsonify({'success': False, 'error': 'Invalid meeting selection'}), 400
         
-        results = []
-        successful_uploads = 0
+        # Prepare files for processing
+        file_list = []
+        validation_errors = []
+        duplicates = []
+        
+        # Create user-specific directory structure
+        user_folder = f"meeting_documents/user_{current_user.username}"
+        if project_id:
+            project_folder_name = "default"
+            if project_id:
+                user_projects = processor.vector_db.get_user_projects(current_user.user_id)
+                selected_project = next((p for p in user_projects if p.project_id == project_id), None)
+                if selected_project:
+                    project_folder_name = selected_project.project_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
+                    project_folder_name = "".join(c for c in project_folder_name if c.isalnum() or c in ("_", "-"))
+            
+            upload_folder = os.path.join(user_folder, f"project_{project_folder_name}")
+        else:
+            upload_folder = user_folder
+        
+        os.makedirs(upload_folder, exist_ok=True)
         
         for file in files:
             if file and file.filename:
                 filename = secure_filename(file.filename)
-                logger.info(f"Processing file: {filename}")
                 
-                file_result = {
-                    'filename': filename,
-                    'success': False,
-                    'error': None,
-                    'chunks': 0
-                }
+                # Validate file extension
+                if not filename.lower().endswith(('.docx', '.txt', '.pdf')):
+                    validation_errors.append({
+                        'filename': filename,
+                        'error': 'Unsupported file format'
+                    })
+                    continue
                 
+                # Save file to permanent location
+                file_path = os.path.join(upload_folder, filename)
+                
+                # Handle duplicate filenames in filesystem
+                counter = 1
+                original_file_path = file_path
+                while os.path.exists(file_path):
+                    name, ext = os.path.splitext(original_file_path)
+                    file_path = f"{name}_{counter}{ext}"
+                    filename = os.path.basename(file_path)
+                    counter += 1
+                
+                # Save file
+                file.save(file_path)
+                
+                # Check for content duplicates
                 try:
-                    # Validate file extension
-                    if not filename.lower().endswith(('.docx', '.txt', '.pdf')):
-                        file_result['error'] = 'Unsupported file format'
-                        results.append(file_result)
-                        logger.warning(f"Unsupported file format: {filename}")
+                    file_hash = processor.vector_db.calculate_file_hash(file_path)
+                    duplicate_info = processor.vector_db.is_file_duplicate(file_hash, filename, current_user.user_id)
+                    
+                    if duplicate_info:
+                        duplicates.append({
+                            'filename': filename,
+                            'original_filename': duplicate_info['original_filename'],
+                            'created_at': duplicate_info['created_at']
+                        })
+                        os.remove(file_path)  # Remove the duplicate file
                         continue
-                    
-                    # Save file to temp directory
-                    temp_path = os.path.join('temp', filename)
-                    os.makedirs('temp', exist_ok=True)
-                    file.save(temp_path)
-                    logger.info(f"File saved to: {temp_path}")
-                    
-                    # Check file size
-                    file_size = os.path.getsize(temp_path)
-                    if file_size == 0:
-                        file_result['error'] = 'File is empty'
-                        results.append(file_result)
-                        os.remove(temp_path)
-                        continue
-                    
-                    if file_size > 50 * 1024 * 1024:  # 50MB limit
-                        file_result['error'] = 'File too large (max 50MB)'
-                        results.append(file_result)
-                        os.remove(temp_path)
-                        continue
-                    
-                    # Process document
-                    content = processor.read_document_content(temp_path)
-                    if not content or not content.strip():
-                        file_result['error'] = 'No readable content found'
-                        results.append(file_result)
-                        os.remove(temp_path)
-                        logger.warning(f"No content extracted from {filename}")
-                        continue
-                    
-                    logger.info(f"Content extracted from {filename}, length: {len(content)}")
-                    
-                    # Parse and process document with user context
-                    meeting_doc = processor.parse_document_content(content, filename)
-                    
-                    # Add user context to document
-                    meeting_doc.user_id = current_user.user_id
-                    
-                    # Use selected project or default project
-                    user_projects = processor.vector_db.get_user_projects(current_user.user_id)
-                    if user_projects:
-                        if project_id:
-                            # Use selected project
-                            selected_project = next((p for p in user_projects if p.project_id == project_id), None)
-                            if selected_project:
-                                meeting_doc.project_id = selected_project.project_id
-                                logger.info(f"Assigned document to selected project: {selected_project.project_name}")
-                        else:
-                            # Use default project (first one)
-                            default_project = user_projects[0]
-                            meeting_doc.project_id = default_project.project_id
-                            logger.info(f"Assigned document to default project: {default_project.project_name}")
                         
-                        # Create a basic meeting for the document
-                        if meeting_doc.project_id:
-                            meeting_id = processor.vector_db.create_meeting(
-                                current_user.user_id,
-                                meeting_doc.project_id,
-                                f"Meeting - {filename}",
-                                meeting_doc.date
-                            )
-                            meeting_doc.meeting_id = meeting_id
-                    
-                    chunks = processor.chunk_document(meeting_doc)
-                    
-                    # Create project-based folder structure
-                    project_folder_name = "Default Project"  # Default fallback
-                    if meeting_doc.project_id:
-                        # Get the project name for folder creation
-                        selected_project = next((p for p in user_projects if p.project_id == meeting_doc.project_id), None)
-                        if selected_project:
-                            # Sanitize project name for folder creation
-                            project_folder_name = selected_project.project_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
-                            project_folder_name = "".join(c for c in project_folder_name if c.isalnum() or c in ("_", "-"))
-                    
-                    # Create project-specific folder structure
-                    user_folder = f"meeting_documents/user_{current_user.username}"
-                    project_folder = os.path.join(user_folder, f"project_{project_folder_name}")
-                    os.makedirs(project_folder, exist_ok=True)
-                    
-                    # Set the folder path for the document
-                    folder_path = f"user_{current_user.username}/project_{project_folder_name}"
-                    meeting_doc.folder_path = folder_path
-                    
-                    permanent_path = os.path.join(project_folder, filename)
-                    
-                    # Handle duplicate filenames
-                    counter = 1
-                    original_permanent_path = permanent_path
-                    while os.path.exists(permanent_path):
-                        name, ext = os.path.splitext(original_permanent_path)
-                        permanent_path = f"{name}_{counter}{ext}"
-                        counter += 1
-                    
-                    shutil.move(temp_path, permanent_path)
-                    
-                    # Add document to database with folder path
-                    processor.vector_db.add_document(meeting_doc, chunks)
-                    
-                    # Success!
-                    file_result['success'] = True
-                    file_result['chunks'] = len(chunks)
-                    successful_uploads += 1
-                    
-                    logger.info(f"Successfully processed {filename} with {len(chunks)} chunks")
-                    
                 except Exception as e:
-                    file_result['error'] = str(e)
-                    logger.error(f"Error processing {filename}: {e}")
-                    
-                    # Clean up temp file if it exists
-                    try:
-                        temp_path = os.path.join('temp', filename)
-                        if os.path.exists(temp_path):
-                            os.remove(temp_path)
-                    except Exception as cleanup_error:
-                        logger.error(f"Error cleaning up temp file: {cleanup_error}")
+                    logger.error(f"Error checking duplicate for {filename}: {e}")
+                    validation_errors.append({
+                        'filename': filename,
+                        'error': f'Error processing file: {str(e)}'
+                    })
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                    continue
                 
-                results.append(file_result)
+                file_list.append({
+                    'path': file_path,
+                    'filename': filename
+                })
         
-        # Save vector index if any files were processed successfully
-        if successful_uploads > 0:
-            try:
-                processor.vector_db.save_index()
-                logger.info(f"Vector index saved after processing {successful_uploads} files")
-            except Exception as e:
-                logger.error(f"Error saving vector index: {e}")
+        # If no valid files to process
+        if not file_list:
+            return jsonify({
+                'success': False,
+                'error': 'No valid files to process',
+                'validation_errors': validation_errors,
+                'duplicates': duplicates
+            }), 400
         
-        # Prepare response
-        response_data = {
-            'success': True,
-            'results': results,
-            'processed': successful_uploads,
-            'total': len(results),
-            'message': f'Successfully processed {successful_uploads} of {len(results)} files'
-        }
-        
-        logger.info(f"Upload completed: {successful_uploads}/{len(results)} files processed successfully")
-        return jsonify(response_data)
-        
+        # Start asynchronous processing
+        try:
+            import threading
+            
+            # Capture user_id before starting thread (current_user not available in thread)
+            user_id = current_user.user_id
+            
+            # Create job ID first for both frontend and background processing
+            job_id = processor.vector_db.create_upload_job(
+                user_id,
+                len(file_list),
+                project_id,
+                meeting_id
+            )
+            
+            def process_in_background():
+                """Background processing function"""
+                try:
+                    processor.process_files_batch_async(
+                        file_list,
+                        user_id,
+                        project_id,
+                        meeting_id,
+                        max_workers=2,  # Limit concurrent processing
+                        job_id=job_id  # Pass existing job_id
+                    )
+                except Exception as e:
+                    logger.error(f"Background processing error: {e}")
+            
+            # Start background processing
+            thread = threading.Thread(target=process_in_background)
+            thread.daemon = True
+            thread.start()
+            
+            # Return immediate response with job ID
+            return jsonify({
+                'success': True,
+                'job_id': job_id,
+                'total_files': len(file_list),
+                'validation_errors': validation_errors,
+                'duplicates': duplicates,
+                'message': f'Upload started for {len(file_list)} files. Use job ID to track progress.'
+            })
+            
+        except Exception as e:
+            logger.error(f"Error starting background processing: {e}")
+            # Clean up uploaded files
+            for file_info in file_list:
+                try:
+                    if os.path.exists(file_info['path']):
+                        os.remove(file_info['path'])
+                except Exception as cleanup_error:
+                    logger.error(f"Error cleaning up {file_info['path']}: {cleanup_error}")
+            
+            return jsonify({
+                'success': False,
+                'error': f'Error starting file processing: {str(e)}'
+            }), 500
+    
     except Exception as e:
         logger.error(f"Critical upload error: {e}")
         return jsonify({
-            'success': False, 
-            'error': str(e),
-            'processed': 0,
-            'total': 0
+            'success': False,
+            'error': str(e)
         }), 500
+
+@app.route('/meetingsai/api/job_status/<job_id>')
+@login_required
+def get_job_status(job_id):
+    """Get the status of an upload job"""
+    try:
+        if not processor:
+            return jsonify({'success': False, 'error': 'System not initialized'}), 500
+        
+        job_status = processor.vector_db.get_job_status(job_id)
+        
+        if not job_status:
+            return jsonify({'success': False, 'error': 'Job not found'}), 404
+        
+        # Check if job belongs to current user
+        if job_status['user_id'] != current_user.user_id:
+            return jsonify({'success': False, 'error': 'Access denied'}), 403
+        
+        return jsonify({
+            'success': True,
+            'job_status': job_status
+        })
+        
+    except Exception as e:
+        logger.error(f"Job status error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/meetingsai/api/chat', methods=['POST'])
 @login_required
@@ -827,26 +748,12 @@ def chat():
     try:
         data = request.get_json()
         message = data.get('message', '').strip()
-        document_ids = data.get('document_ids', None)  # Document filtering
-        project_id = data.get('project_id', None)  # Single project filtering (legacy)
-        project_ids = data.get('project_ids', None)  # Multiple project filtering (enhanced)
-        meeting_ids = data.get('meeting_ids', None)  # Meeting filtering
-        date_filters = data.get('date_filters', None)  # Date filtering
-        folder_path = data.get('folder_path', None)  # Folder-based filtering
-        
-        logger.info(f"Chat request received: {message[:100]}...")
-        if document_ids:
-            logger.info(f"Document filter: {document_ids}")
-        if project_id:
-            logger.info(f"Project filter: {project_id}")
-        if project_ids:
-            logger.info(f"Enhanced project filters: {project_ids}")
-        if meeting_ids:
-            logger.info(f"Meeting filters: {meeting_ids}")
-        if date_filters:
-            logger.info(f"Date filters: {date_filters}")
-        if folder_path:
-            logger.info(f"Folder filter: {folder_path}")
+        document_ids = data.get('document_ids', None)
+        project_id = data.get('project_id', None)
+        project_ids = data.get('project_ids', None)
+        meeting_ids = data.get('meeting_ids', None)
+        date_filters = data.get('date_filters', None)
+        folder_path = data.get('folder_path', None)
         
         if not message:
             return jsonify({'success': False, 'error': 'No message provided'}), 400
@@ -858,7 +765,6 @@ def chat():
         # Check if documents are available
         try:
             vector_size = getattr(processor.vector_db.index, 'ntotal', 0) if processor.vector_db.index else 0
-            logger.info(f"Vector database size: {vector_size}")
         except Exception as e:
             logger.error(f"Error checking vector database: {e}")
             vector_size = 0
@@ -866,13 +772,11 @@ def chat():
         if vector_size == 0:
             response = "I don't have any documents to analyze yet. Please upload some meeting documents first! 📁"
             follow_up_questions = []
-            logger.info("No documents available, sending default response")
         else:
             try:
-                logger.info("Generating response using processor")
                 user_id = current_user.user_id
                 
-                # Combine project filters (legacy and enhanced)
+                # Combine project filters
                 combined_project_ids = []
                 if project_id:
                     combined_project_ids.append(project_id)
@@ -891,12 +795,10 @@ def chat():
                     context_limit=50, 
                     include_context=True
                 )
-                logger.info(f"Response generated, length: {len(response)}")
                 
                 # Generate follow-up questions
                 try:
                     follow_up_questions = processor.generate_follow_up_questions(message, response, context)
-                    logger.info(f"Generated {len(follow_up_questions)} follow-up questions")
                 except Exception as follow_up_error:
                     logger.error(f"Error generating follow-up questions: {follow_up_error}")
                     follow_up_questions = []
@@ -917,38 +819,11 @@ def chat():
         logger.error(f"Chat error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
-@app.route('/meetingsai/api/documents')
-@login_required
-def get_documents():
-    """Get list of all documents for file selection"""
-    try:
-        logger.info("Documents request received")
-        
-        if not processor:
-            logger.error("Processor not initialized for documents")
-            return jsonify({'success': False, 'error': 'System not initialized'}), 500
-        
-        user_id = current_user.user_id
-        documents = processor.vector_db.get_all_documents(user_id)
-        
-        return jsonify({
-            'success': True,
-            'documents': documents,
-            'count': len(documents)
-        })
-        
-    except Exception as e:
-        logger.error(f"Documents error: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-# Project Management Endpoints
 @app.route('/meetingsai/api/projects')
 @login_required
 def get_projects():
     """Get all projects for the current user"""
     try:
-        logger.info("Projects request received")
-        
         if not processor:
             logger.error("Processor not initialized for projects")
             return jsonify({'success': False, 'error': 'System not initialized'}), 500
@@ -1008,13 +883,33 @@ def create_project():
         logger.error(f"Create project error: {e}")
         return jsonify({'success': False, 'error': 'Failed to create project'}), 500
 
+@app.route('/meetingsai/api/documents')
+@login_required
+def get_documents():
+    """Get list of all documents for file selection"""
+    try:
+        if not processor:
+            logger.error("Processor not initialized for documents")
+            return jsonify({'success': False, 'error': 'System not initialized'}), 500
+        
+        user_id = current_user.user_id
+        documents = processor.vector_db.get_all_documents(user_id)
+        
+        return jsonify({
+            'success': True,
+            'documents': documents,
+            'count': len(documents)
+        })
+        
+    except Exception as e:
+        logger.error(f"Documents error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/meetingsai/api/meetings')
 @login_required
 def get_meetings():
     """Get all meetings for the current user"""
     try:
-        logger.info("Meetings request received")
-        
         if not processor:
             logger.error("Processor not initialized for meetings")
             return jsonify({'success': False, 'error': 'System not initialized'}), 500
@@ -1027,9 +922,9 @@ def get_meetings():
         for meeting in meetings:
             meeting_list.append({
                 'meeting_id': meeting.meeting_id,
-                'title': meeting.meeting_name,  # Use meeting_name from the dataclass
+                'title': meeting.meeting_name,
                 'date': meeting.meeting_date.isoformat() if meeting.meeting_date else None,
-                'participants': '',  # This will be populated from documents later
+                'participants': '',
                 'project_id': meeting.project_id,
                 'created_at': meeting.created_at.isoformat()
             })
@@ -1049,8 +944,6 @@ def get_meetings():
 def get_stats():
     """Get system statistics"""
     try:
-        logger.info("Stats request received")
-        
         if not processor:
             logger.error("Processor not initialized for stats")
             return jsonify({'success': False, 'error': 'System not initialized'}), 500
@@ -1061,308 +954,11 @@ def get_stats():
             logger.error(f"Error in stats: {stats['error']}")
             return jsonify({'success': False, 'error': stats['error']}), 500
         
-        logger.info("Stats generated successfully")
         return jsonify({'success': True, 'stats': stats})
         
     except Exception as e:
         logger.error(f"Stats error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
-@app.route('/meetingsai/api/refresh', methods=['POST'])
-@login_required
-def refresh_system():
-    """Refresh the system"""
-    try:
-        logger.info("System refresh requested")
-        
-        if processor:
-            processor.refresh_clients()
-            logger.info("System refreshed successfully")
-            return jsonify({'success': True, 'message': 'System refreshed successfully'})
-        else:
-            logger.error("Processor not initialized for refresh")
-            return jsonify({'success': False, 'error': 'System not initialized'}), 500
-    except Exception as e:
-        logger.error(f"Refresh error: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-@app.route('/meetingsai/api/setup', methods=['POST'])
-def setup_database():
-    """Manual database setup endpoint"""
-    try:
-        global processor
-        logger.info("Manual database setup requested")
-        
-        setup_results = {
-            'directories_created': [],
-            'processor_initialized': False,
-            'database_initialized': False,
-            'errors': []
-        }
-        
-        # Create directories
-        for directory in ['uploads', 'temp', 'meeting_documents', 'logs', 'backups']:
-            try:
-                os.makedirs(directory, exist_ok=True)
-                setup_results['directories_created'].append(directory)
-                logger.info(f"Created/verified directory: {directory}")
-            except Exception as e:
-                setup_results['errors'].append(f"Directory {directory}: {str(e)}")
-        
-        # Initialize processor
-        try:
-            if processor is None:
-                logger.info("Initializing processor...")
-                if initialize_processor():
-                    setup_results['processor_initialized'] = True
-                    logger.info("Processor initialized successfully")
-                else:
-                    setup_results['errors'].append("Processor initialization failed")
-            else:
-                setup_results['processor_initialized'] = True
-                logger.info("Processor already initialized")
-        except Exception as e:
-            setup_results['errors'].append(f"Processor error: {str(e)}")
-        
-        # Initialize database
-        try:
-            if processor and processor.vector_db:
-                logger.info("Initializing database schema...")
-                processor.vector_db._init_database()
-                setup_results['database_initialized'] = True
-                logger.info("Database schema initialized successfully")
-            else:
-                setup_results['errors'].append("No processor or vector_db available")
-        except Exception as e:
-            setup_results['errors'].append(f"Database initialization error: {str(e)}")
-        
-        # Test database
-        try:
-            if processor and processor.vector_db:
-                # Try to query users to test database
-                test_users = processor.vector_db.get_all_users()
-                setup_results['database_test'] = f"Database accessible, {len(test_users) if test_users else 0} users found"
-        except Exception as e:
-            setup_results['errors'].append(f"Database test error: {str(e)}")
-        
-        success = setup_results['processor_initialized'] and setup_results['database_initialized']
-        return jsonify({
-            'success': success,
-            'message': 'Database setup completed' if success else 'Database setup had errors',
-            'results': setup_results
-        })
-        
-    except Exception as e:
-        logger.error(f"Manual setup error: {e}")
-        logger.exception("Full setup error traceback:")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/meetingsai/api/debug')
-def debug_endpoint():
-    """Debug endpoint to check system status"""
-    try:
-        debug_info = {
-            'flask_app_running': True,
-            'processor_status': processor is not None,
-            'current_directory': os.getcwd(),
-            'python_path': os.environ.get('PYTHONPATH', 'Not set'),
-            'request_method': request.method,
-            'request_url': request.url,
-        }
-        
-        if processor:
-            debug_info['processor_type'] = type(processor).__name__
-            debug_info['vector_db_status'] = processor.vector_db is not None
-            
-            # Check database files
-            try:
-                import glob
-                debug_info['database_files'] = {
-                    'sqlite_files': glob.glob('*.db'),
-                    'faiss_files': glob.glob('*.faiss*'),
-                    'vector_files': glob.glob('vector_*')
-                }
-            except Exception as e:
-                debug_info['file_check_error'] = str(e)
-        
-        return jsonify({'success': True, 'debug': debug_info})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e), 'debug': {'error': str(e)}})
-
-@app.route('/meetingsai/api/test')
-def test_system():
-    """Test endpoint to check if system is working"""
-    try:
-        status = {
-            'processor_initialized': processor is not None,
-            'vector_db_available': False,
-            'vector_size': 0,
-            'working_directory': os.getcwd(),
-            'app_initialized': True
-        }
-        
-        if processor:
-            try:
-                status['vector_db_available'] = processor.vector_db is not None
-                if processor.vector_db and processor.vector_db.index:
-                    status['vector_size'] = getattr(processor.vector_db.index, 'ntotal', 0)
-            except Exception as e:
-                logger.error(f"Error checking vector DB: {e}")
-                status['vector_db_error'] = str(e)
-        else:
-            logger.warning("Processor is None - attempting re-initialization")
-            # Try to re-initialize
-            if initialize_processor():
-                status['processor_initialized'] = True
-                status['reinitialized'] = True
-            else:
-                status['initialization_failed'] = True
-        
-        logger.info(f"System test status: {status}")
-        return jsonify({'success': True, 'status': status})
-        
-    except Exception as e:
-        logger.error(f"Test error: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/meetingsai/api/test_registration')
-def test_registration_readiness():
-    """Test if system is ready for user registration"""
-    try:
-        readiness_check = {
-            'processor_available': processor is not None,
-            'vector_db_available': False,
-            'database_accessible': False,
-            'can_create_user': False,
-            'errors': []
-        }
-        
-        if processor:
-            readiness_check['vector_db_available'] = processor.vector_db is not None
-            
-            if processor.vector_db:
-                try:
-                    # Test database access
-                    test_users = processor.vector_db.get_all_users()
-                    readiness_check['database_accessible'] = True
-                    readiness_check['existing_users_count'] = len(test_users) if test_users else 0
-                except Exception as e:
-                    readiness_check['errors'].append(f"Database access error: {str(e)}")
-                
-                try:
-                    # Test if we can create a test user (dry run)
-                    import bcrypt
-                    test_hash = bcrypt.hashpw('test123'.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-                    readiness_check['can_hash_password'] = True
-                    readiness_check['can_create_user'] = True
-                except Exception as e:
-                    readiness_check['errors'].append(f"User creation test error: {str(e)}")
-            else:
-                readiness_check['errors'].append("Vector DB not available")
-        else:
-            readiness_check['errors'].append("Processor not initialized")
-        
-        overall_ready = (readiness_check['processor_available'] and 
-                        readiness_check['vector_db_available'] and 
-                        readiness_check['database_accessible'])
-        
-        return jsonify({
-            'success': True,
-            'ready_for_registration': overall_ready,
-            'readiness_check': readiness_check
-        })
-        
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/meetingsai/api/test_folder_fix')
-@login_required
-def test_folder_fix():
-    """Test if our folder fix is loaded"""
-    try:
-        user_id = current_user.user_id
-        documents = processor.vector_db.get_all_documents(user_id)
-        
-        has_folder_path = any('folder_path' in doc for doc in documents)
-        has_project_name = any('project_name' in doc for doc in documents)
-        
-        return jsonify({
-            'success': True, 
-            'folder_fix_loaded': has_folder_path and has_project_name,
-            'documents_count': len(documents),
-            'sample_doc': documents[0] if documents else None,
-            'all_docs': documents
-        }), 200
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-@app.route('/meetingsai/api/test_auth_endpoint')
-def test_auth_endpoint():
-    """Simple test endpoint to verify API is working"""
-    logger.info("=== AUTH TEST ENDPOINT CALLED ===")
-    return jsonify({'success': True, 'message': 'Auth endpoint is reachable', 'timestamp': datetime.now().isoformat()})
-
-@app.route('/meetingsai/api/test_db_init')
-def test_db_init():
-    """Test database initialization separately"""
-    try:
-        logger.info("Testing database initialization...")
-        
-        # Test just the VectorDatabase creation
-        from meeting_processor import VectorDatabase
-        test_db = VectorDatabase()
-        
-        result = {
-            'db_created': test_db is not None,
-            'db_path': test_db.db_path if test_db else None,
-            'index_path': test_db.index_path if test_db else None,
-            'working_directory': os.getcwd()
-        }
-        
-        # Test database connection
-        try:
-            import sqlite3
-            conn = sqlite3.connect(test_db.db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-            tables = cursor.fetchall()
-            conn.close()
-            result['tables'] = [table[0] for table in tables]
-            result['db_accessible'] = True
-        except Exception as db_error:
-            result['db_accessible'] = False
-            result['db_error'] = str(db_error)
-        
-        logger.info(f"Database test result: {result}")
-        return jsonify({'success': True, 'result': result})
-        
-    except Exception as e:
-        logger.error(f"Database test error: {e}")
-        logger.exception("Database test traceback:")
-        return jsonify({'success': False, 'error': str(e), 'working_directory': os.getcwd()})
-
 if __name__ == '__main__':
-    # This block only runs when script is executed directly (development mode)
-    # For IIS deployment, setup_application() already handles initialization
-    
-    # Check if required files exist (for development)
-    required_files = {
-        'templates/chat.html': 'HTML template',
-        'static/styles.css': 'CSS stylesheet', 
-        'static/script.js': 'JavaScript file'
-    }
-    
-    missing_files = []
-    for file_path, description in required_files.items():
-        if not os.path.exists(file_path):
-            missing_files.append(f"{file_path} ({description})")
-    
-    if missing_files:
-        print("Missing required files:")
-        for missing in missing_files:
-            print(f"   - {missing}")
-        exit(1)
-    
-    # Run the Flask development server
     app.run(debug=True)
