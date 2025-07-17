@@ -8,6 +8,10 @@ from werkzeug.utils import secure_filename
 import shutil
 import bcrypt
 import secrets
+import sqlite3
+import pickle
+from flask.sessions import SessionInterface, SessionMixin
+from uuid import uuid4
 
 # Ensure logs directory exists
 os.makedirs('logs', exist_ok=True)
@@ -42,6 +46,9 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
 
+# WFASTCGI FIX: Use database-backed sessions instead of memory/file sessions
+app.config['SECRET_KEY'] = 'your-secret-key-here-' + secrets.token_hex(16)
+
 # Enhanced session configuration for persistence
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)  # 30 day session
 app.config['SESSION_COOKIE_SECURE'] = False  # Set to True in production with HTTPS
@@ -50,6 +57,119 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'  # CSRF protection
 app.config['REMEMBER_COOKIE_DURATION'] = timedelta(days=30)  # 30 day remember me
 app.config['REMEMBER_COOKIE_SECURE'] = False  # Set to True in production with HTTPS
 app.config['REMEMBER_COOKIE_HTTPONLY'] = True
+
+# Custom session class for wfastcgi compatibility
+class SqliteSession(dict, SessionMixin):
+    pass
+
+class SqliteSessionInterface(SessionInterface):
+    """SQLite-based session interface for wfastcgi compatibility"""
+    
+    def __init__(self, db_path='sessions.db'):
+        self.db_path = db_path
+        self.session_cookie_name = 'session'
+        self._init_db()
+    
+    def _init_db(self):
+        """Initialize the sessions table"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id TEXT PRIMARY KEY,
+                    data BLOB,
+                    expiry TIMESTAMP
+                )
+            ''')
+            conn.commit()
+            conn.close()
+            logging.info("Session database initialized successfully")
+        except Exception as e:
+            logging.error(f"Session database initialization error: {e}")
+    
+    def open_session(self, app, request):
+        """Load session from database"""
+        # Always return a valid session object, never None
+        session = SqliteSession()
+        
+        try:
+            sid = request.cookies.get(self.session_cookie_name)
+            if not sid:
+                logging.debug("No session ID in cookies, returning empty session")
+                return session
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('SELECT data FROM sessions WHERE id = ? AND expiry > ?', 
+                         (sid, datetime.now()))
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                try:
+                    data = pickle.loads(result[0])
+                    session.update(data)
+                    logging.debug(f"Loaded session data for ID: {sid}")
+                except Exception as pickle_error:
+                    logging.error(f"Session data unpickling error: {pickle_error}")
+            else:
+                logging.debug(f"No valid session found for ID: {sid}")
+                
+        except Exception as e:
+            logging.error(f"Session load error: {e}")
+        
+        return session
+    
+    def save_session(self, app, session, response):
+        """Save session to database"""
+        try:
+            domain = self.get_cookie_domain(app)
+            path = self.get_cookie_path(app)
+            
+            # Handle empty or unmodified sessions
+            if not session or not getattr(session, 'modified', True):
+                if hasattr(session, 'modified') and session.modified:
+                    response.delete_cookie(self.session_cookie_name, domain=domain, path=path)
+                return
+            
+            # Get or generate session ID
+            sid = None
+            try:
+                from flask import request as flask_request
+                sid = flask_request.cookies.get(self.session_cookie_name) if flask_request else None
+            except:
+                pass
+                
+            if not sid:
+                sid = str(uuid4())
+            
+            # Calculate expiry
+            expiry = datetime.now() + app.permanent_session_lifetime
+            
+            # Save to database
+            conn = sqlite3.connect(self.db_path)
+            data = pickle.dumps(dict(session))
+            conn.execute('INSERT OR REPLACE INTO sessions (id, data, expiry) VALUES (?, ?, ?)',
+                        (sid, data, expiry))
+            conn.commit()
+            conn.close()
+            
+            # Set cookie
+            response.set_cookie(self.session_cookie_name, sid,
+                              expires=expiry, httponly=True,
+                              domain=domain, path=path, secure=False)
+            
+            logging.debug(f"Session saved successfully with ID: {sid}")
+            
+        except Exception as e:
+            logging.error(f"Session save error: {e}")
+    
+    def get_cookie_name(self, app):
+        """Get the session cookie name"""
+        return self.session_cookie_name
+
+# Apply custom session interface for wfastcgi
+app.session_interface = SqliteSessionInterface()
 
 # Configure Flask-Login
 login_manager = LoginManager()
