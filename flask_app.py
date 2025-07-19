@@ -964,5 +964,22 @@ def get_stats():
         logger.error(f"Stats error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@app.route('/meetingsai/api/refresh', methods=['POST'])
+@login_required
+def refresh_system():
+    """Refresh the system"""
+    try:
+        logger.info("System refresh requested")
+        if processor:
+            processor.refresh_clients()
+            logger.info("System refreshed successfully")
+            return jsonify({'success': True, 'message': 'System refreshed successfully'})
+        else:
+            logger.error("Processor not initialized for refresh")
+            return jsonify({'success': False, 'error': 'System not initialized'}), 500
+    except Exception as e:
+        logger.error(f"Refresh error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 if __name__ == '__main__':
     app.run(debug=True)

@@ -2295,34 +2295,35 @@ class EnhancedMeetingDocumentProcessor:
             else:
                 return fallback_summary
     def refresh_clients(self):
-        """Refresh clients - simplified for OpenAI (no token refresh needed)"""
+        """Refresh Azure clients with new access token"""
         try:
             global access_token, llm, embedding_model
-            
-            # Force reload environment variables
-            load_dotenv(override=True)
-            
-            # Check API key
-            current_api_key = os.getenv("OPENAI_API_KEY")
-            if not current_api_key:
-                raise ValueError("OPENAI_API_KEY not found in environment")
-            
-            logger.info("Refreshing LLM client with new API key")
-            
-            # For OpenAI, we don't need to refresh tokens since we use API keys
-            # But we can recreate the clients if needed
-            access_token = get_access_token()  # This just returns a dummy token
-            llm = get_llm(access_token)
-            embedding_model = get_embedding_model(access_token)
-            
-            self.llm = llm
-            self.embedding_model = embedding_model
-            self.access_token = access_token
-            
-            logger.info("OpenAI clients refreshed successfully")
-            
+
+            if hasattr(self, 'token_expiry') and datetime.now() >= self.token_expiry - timedelta(minutes=5):
+                logger.info("Refreshing access token...")
+                access_token = get_access_token()
+                self.access_token = access_token
+                self.token_expiry = datetime.now() + timedelta(hours=1)
+
+                llm = get_llm(access_token)
+                embedding_model = get_embedding_model(access_token)
+                self.llm = llm
+                self.embedding_model = embedding_model
+            else:
+                # Force refresh even if not expired
+                logger.info("Force refreshing access token...")
+                access_token = get_access_token()
+                self.access_token = access_token
+                self.token_expiry = datetime.now() + timedelta(hours=1)
+
+                llm = get_llm(access_token)
+                embedding_model = get_embedding_model(access_token)
+                self.llm = llm
+                self.embedding_model = embedding_model
+
+            logger.info("Azure clients refreshed successfully")
         except Exception as e:
-            logger.error(f"Failed to refresh clients: {e}")
+            logger.error(f"Failed to refresh Azure clients: {e}")
             raise
     
     def extract_date_from_filename(self, filename: str) -> datetime:

@@ -4050,6 +4050,36 @@ sendMessage = function() {
     return originalSendMessage.apply(this, arguments);
 };
 
+// Refresh system function
+function refreshSystem() {
+    console.log('Refreshing system...');
+    
+    // Show notification
+    showNotification('🔄 Refreshing system...', 'info');
+    
+    fetch('/meetingsai/api/refresh', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        credentials: 'same-origin'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showNotification('✅ System refreshed successfully', 'success');
+            console.log('System refresh successful:', data.message);
+        } else {
+            showNotification('❌ Failed to refresh system: ' + (data.error || 'Unknown error'), 'error');
+            console.error('System refresh failed:', data.error);
+        }
+    })
+    .catch(error => {
+        showNotification('❌ Network error during system refresh', 'error');
+        console.error('System refresh error:', error);
+    });
+}
+
 // Initialize user profile display when the page loads
 document.addEventListener('DOMContentLoaded', function() {
     updateUserProfileDisplay();
