@@ -1,15 +1,12 @@
 import os
 import json
-import pickle
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple, Union
 from dataclasses import dataclass, asdict
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-import pandas as pd
 import re
 from pathlib import Path
-import httpx
 # Remove Azure imports and replace with OpenAI
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.schema import HumanMessage, SystemMessage
@@ -107,7 +104,7 @@ except Exception as e:
 
 @dataclass
 class DocumentChunk:
-    """Structure to hold document chunk information"""
+    """Structure to hold document chunk information with enhanced intelligence metadata"""
     chunk_id: str
     document_id: str
     filename: str
@@ -116,6 +113,19 @@ class DocumentChunk:
     start_char: int
     end_char: int
     embedding: Optional[np.ndarray] = None
+    # Enhanced intelligence metadata
+    enhanced_content: Optional[str] = None
+    chunk_type: Optional[str] = None
+    speakers: Optional[str] = None  # JSON string
+    speaker_contributions: Optional[str] = None  # JSON string
+    topics: Optional[str] = None  # JSON string
+    decisions: Optional[str] = None  # JSON string
+    actions: Optional[str] = None  # JSON string
+    questions: Optional[str] = None  # JSON string
+    context_before: Optional[str] = None
+    context_after: Optional[str] = None
+    key_phrases: Optional[str] = None  # JSON string
+    importance_score: Optional[float] = None
 
 @dataclass
 class User:
@@ -372,7 +382,7 @@ class VectorDatabase:
         conn.close()
     
     def _migrate_existing_tables(self, cursor):
-        """Migrate existing tables to support multi-user structure"""
+        """Migrate existing tables to support multi-user structure and enhanced intelligence"""
         try:
             # Check if documents table exists and needs migration
             cursor.execute("PRAGMA table_info(documents)")
@@ -393,14 +403,33 @@ class VectorDatabase:
             
             # Check if chunks table exists and needs migration
             cursor.execute("PRAGMA table_info(chunks)")
-            columns = [column[1] for column in cursor.fetchall()]
+            chunk_columns = [column[1] for column in cursor.fetchall()]
             
-            if 'user_id' not in columns:
+            if 'user_id' not in chunk_columns:
                 logger.info("Migrating chunks table to support multi-user...")
                 cursor.execute('ALTER TABLE chunks ADD COLUMN user_id TEXT')
                 cursor.execute('ALTER TABLE chunks ADD COLUMN meeting_id TEXT')
                 cursor.execute('ALTER TABLE chunks ADD COLUMN project_id TEXT')
                 logger.info("Chunks table migrated successfully")
+            
+            # Enhanced intelligence metadata migration
+            intelligence_columns = [
+                'enhanced_content', 'chunk_type', 'speakers', 'speaker_contributions',
+                'topics', 'decisions', 'actions', 'questions', 'context_before',
+                'context_after', 'key_phrases', 'importance_score'
+            ]
+            
+            missing_intelligence_columns = [col for col in intelligence_columns if col not in chunk_columns]
+            
+            if missing_intelligence_columns:
+                logger.info("Adding enhanced intelligence metadata columns to chunks table...")
+                for column in missing_intelligence_columns:
+                    if column == 'importance_score':
+                        cursor.execute(f'ALTER TABLE chunks ADD COLUMN {column} REAL DEFAULT 0.5')
+                    else:
+                        cursor.execute(f'ALTER TABLE chunks ADD COLUMN {column} TEXT')
+                logger.info(f"Added {len(missing_intelligence_columns)} intelligence metadata columns")
+                logger.info("Enhanced intelligence migration completed successfully")
                 
         except sqlite3.OperationalError as e:
             # Tables might not exist yet, that's okay
@@ -413,12 +442,41 @@ class VectorDatabase:
             try:
                 self.index = faiss.read_index(self.index_path)
                 logger.info(f"Loaded existing FAISS index with {self.index.ntotal} vectors")
+                # Rebuild chunk metadata mapping from database
+                self._rebuild_chunk_metadata()
             except Exception as e:
                 logger.error(f"Error loading FAISS index: {e}")
                 self.index = faiss.IndexFlatIP(self.dimension)
         else:
             self.index = faiss.IndexFlatIP(self.dimension)
             logger.info("Created new FAISS index")
+    
+    def _rebuild_chunk_metadata(self):
+        """Rebuild chunk_metadata mapping from database after loading FAISS index"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Get all chunks ordered by their creation (to match FAISS index order)
+            cursor.execute('''
+                SELECT chunk_id, chunk_index, document_id 
+                FROM chunks 
+                ORDER BY document_id, chunk_index
+            ''')
+            
+            chunks_data = cursor.fetchall()
+            conn.close()
+            
+            # Rebuild the mapping assuming chunks were added in order
+            self.chunk_metadata = {}
+            for i, (chunk_id, chunk_index, document_id) in enumerate(chunks_data):
+                self.chunk_metadata[i] = chunk_id
+            
+            logger.info(f"Rebuilt chunk metadata mapping with {len(self.chunk_metadata)} entries")
+            
+        except Exception as e:
+            logger.error(f"Error rebuilding chunk metadata: {e}")
+            self.chunk_metadata = {}
     
     def add_document(self, document: MeetingDocument, chunks: List[DocumentChunk]):
         """Add document and its chunks to the database"""
@@ -468,7 +526,7 @@ class VectorDatabase:
                         chunk.end_char
                     ))
             
-            # Insert chunks in batch with user context
+            # Insert chunks in batch with user context and intelligence metadata
             chunk_data_with_context = []
             for chunk in chunks:
                 chunk_data_with_context.append((
@@ -481,14 +539,29 @@ class VectorDatabase:
                     chunk.end_char,
                     document.user_id,
                     document.meeting_id,
-                    document.project_id
+                    document.project_id,
+                    # Enhanced intelligence metadata
+                    getattr(chunk, 'enhanced_content', None),
+                    getattr(chunk, 'chunk_type', None),
+                    getattr(chunk, 'speakers', None),
+                    getattr(chunk, 'speaker_contributions', None),
+                    getattr(chunk, 'topics', None),
+                    getattr(chunk, 'decisions', None),
+                    getattr(chunk, 'actions', None),
+                    getattr(chunk, 'questions', None),
+                    getattr(chunk, 'context_before', None),
+                    getattr(chunk, 'context_after', None),
+                    getattr(chunk, 'key_phrases', None),
+                    getattr(chunk, 'importance_score', 0.5)
                 ))
             
             cursor.executemany('''
                 INSERT OR REPLACE INTO chunks 
                 (chunk_id, document_id, filename, chunk_index, content, start_char, end_char,
-                 user_id, meeting_id, project_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 user_id, meeting_id, project_id, enhanced_content, chunk_type, speakers,
+                 speaker_contributions, topics, decisions, actions, questions, context_before,
+                 context_after, key_phrases, importance_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', chunk_data_with_context)
             
             # Add vectors to FAISS index
@@ -511,6 +584,49 @@ class VectorDatabase:
         except Exception as e:
             conn.rollback()
             logger.error(f"Error adding document {document.filename}: {e}")
+            raise
+        finally:
+            conn.close()
+    
+    def store_document_metadata(self, filename: str, content: str, user_id: str, 
+                               project_id: str = None, meeting_id: str = None) -> str:
+        """Store document metadata and return document_id"""
+        document_id = f"doc_{uuid.uuid4().hex[:8]}"
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            # Insert basic document metadata
+            cursor.execute('''
+                INSERT INTO documents 
+                (document_id, filename, date, title, content_summary, main_topics, 
+                 past_events, future_actions, participants, chunk_count, file_size,
+                 user_id, meeting_id, project_id, folder_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                document_id,
+                filename,
+                datetime.now(),
+                filename,
+                "",  # content_summary - will be filled later
+                "[]",  # main_topics
+                "[]",  # past_events
+                "[]",  # future_actions
+                "[]",  # participants
+                0,  # chunk_count - will be updated later
+                len(content.encode('utf-8')),  # file_size
+                user_id,
+                meeting_id,
+                project_id,
+                None  # folder_path
+            ))
+            conn.commit()
+            logger.info(f"Stored document metadata for {filename} with ID {document_id}")
+            return document_id
+            
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error storing document metadata for {filename}: {e}")
             raise
         finally:
             conn.close()
@@ -566,7 +682,7 @@ class VectorDatabase:
         return filtered_results
     
     def get_chunks_by_ids(self, chunk_ids: List[str]) -> List[DocumentChunk]:
-        """Retrieve chunks by their IDs"""
+        """Retrieve chunks by their IDs with enhanced intelligence metadata"""
         if not chunk_ids:
             return []
         
@@ -575,7 +691,10 @@ class VectorDatabase:
         
         placeholders = ','.join(['?' for _ in chunk_ids])
         cursor.execute(f'''
-            SELECT chunk_id, document_id, filename, chunk_index, content, start_char, end_char
+            SELECT chunk_id, document_id, filename, chunk_index, content, start_char, end_char,
+                   enhanced_content, chunk_type, speakers, speaker_contributions, topics, 
+                   decisions, actions, questions, context_before, context_after, 
+                   key_phrases, importance_score
             FROM chunks WHERE chunk_id IN ({placeholders})
         ''', chunk_ids)
         
@@ -588,12 +707,278 @@ class VectorDatabase:
                 chunk_index=row[3],
                 content=row[4],
                 start_char=row[5],
-                end_char=row[6]
+                end_char=row[6],
+                enhanced_content=row[7],
+                chunk_type=row[8],
+                speakers=row[9],
+                speaker_contributions=row[10],
+                topics=row[11],
+                decisions=row[12],
+                actions=row[13],
+                questions=row[14],
+                context_before=row[15],
+                context_after=row[16],
+                key_phrases=row[17],
+                importance_score=row[18]
             )
             chunks.append(chunk)
         
         conn.close()
         return chunks
+    
+    def enhanced_search_with_metadata(self, query_embedding: np.ndarray, user_id: str, 
+                                    filters: Dict = None, top_k: int = 20) -> List[Dict]:
+        """Enhanced search with metadata filtering and context reconstruction"""
+        try:
+            # Perform base vector search
+            base_results = self.search_similar_chunks(query_embedding, top_k * 3)
+            
+            # Apply metadata filters
+            filtered_results = self._apply_metadata_filters(base_results, filters, user_id)
+            
+            # Get enhanced chunks with metadata
+            chunk_ids = [result[0] for result in filtered_results[:top_k]]
+            enhanced_chunks = self.get_chunks_by_ids(chunk_ids)
+            
+            # Reconstruct context around chunks
+            context_enhanced_results = []
+            for i, chunk in enumerate(enhanced_chunks):
+                relevance_score = next((score for cid, score in filtered_results if cid == chunk.chunk_id), 0.0)
+                
+                context_data = self._reconstruct_chunk_context(chunk)
+                
+                result = {
+                    'chunk': chunk,
+                    'relevance_score': relevance_score,
+                    'context': context_data,
+                    'metadata': {
+                        'chunk_type': chunk.chunk_type,
+                        'speakers': json.loads(chunk.speakers) if chunk.speakers else [],
+                        'topics': json.loads(chunk.topics) if chunk.topics else [],
+                        'decisions': json.loads(chunk.decisions) if chunk.decisions else [],
+                        'actions': json.loads(chunk.actions) if chunk.actions else [],
+                        'importance_score': chunk.importance_score or 0.5
+                    }
+                }
+                context_enhanced_results.append(result)
+            
+            return context_enhanced_results
+            
+        except Exception as e:
+            logger.error(f"Error in enhanced search: {e}")
+            return []
+    
+    def _apply_metadata_filters(self, search_results: List[Tuple[str, float]], 
+                               filters: Dict, user_id: str) -> List[Tuple[str, float]]:
+        """Apply metadata filters to search results"""
+        if not filters:
+            return search_results
+        
+        filtered_results = []
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            for chunk_id, score in search_results:
+                cursor.execute('''
+                    SELECT chunk_type, speakers, topics, decisions, actions, importance_score, user_id
+                    FROM chunks WHERE chunk_id = ?
+                ''', (chunk_id,))
+                
+                row = cursor.fetchone()
+                if not row or row[6] != user_id:  # Check user ownership
+                    continue
+                
+                chunk_type, speakers_json, topics_json, decisions_json, actions_json, importance_score, _ = row
+                
+                # Apply filters
+                if self._chunk_matches_filters(
+                    chunk_type, speakers_json, topics_json, decisions_json, 
+                    actions_json, importance_score, filters
+                ):
+                    filtered_results.append((chunk_id, score))
+            
+        finally:
+            conn.close()
+        
+        return filtered_results
+    
+    def _chunk_matches_filters(self, chunk_type: str, speakers_json: str, topics_json: str,
+                              decisions_json: str, actions_json: str, importance_score: float,
+                              filters: Dict) -> bool:
+        """Check if chunk matches the specified filters"""
+        try:
+            # Parse JSON fields
+            speakers = json.loads(speakers_json) if speakers_json else []
+            topics = json.loads(topics_json) if topics_json else []
+            decisions = json.loads(decisions_json) if decisions_json else []
+            actions = json.loads(actions_json) if actions_json else []
+            
+            # Filter by chunk type
+            if 'chunk_type' in filters:
+                if chunk_type not in filters['chunk_type']:
+                    return False
+            
+            # Filter by speakers (enhanced matching)
+            if 'speakers' in filters:
+                filter_speakers = [s.lower() for s in filters['speakers']]
+                chunk_speakers = [s.lower() for s in speakers]
+                
+                logger.info(f"Speaker filtering: Looking for {filter_speakers} in chunk speakers {chunk_speakers}")
+                
+                # Check for exact matches first
+                exact_match = any(fs in chunk_speakers for fs in filter_speakers)
+                
+                # Check for partial matches (first name, last name)
+                partial_match = False
+                if not exact_match:
+                    for fs in filter_speakers:
+                        for cs in chunk_speakers:
+                            # Check if filter speaker is contained in chunk speaker or vice versa
+                            if fs in cs or cs in fs:
+                                partial_match = True
+                                logger.info(f"Found partial match: '{fs}' matches '{cs}'")
+                                break
+                            # Check individual name parts
+                            fs_parts = fs.split()
+                            cs_parts = cs.split()
+                            if any(part in cs_parts for part in fs_parts):
+                                partial_match = True
+                                logger.info(f"Found name part match: '{fs}' parts {fs_parts} match '{cs}' parts {cs_parts}")
+                                break
+                        if partial_match:
+                            break
+                
+                if not (exact_match or partial_match):
+                    logger.info(f"No speaker match found for {filter_speakers} in {chunk_speakers}")
+                    return False
+                else:
+                    logger.info(f"Speaker match found! exact={exact_match}, partial={partial_match}")
+            
+            # Filter by topics
+            if 'topics' in filters:
+                filter_topics = [t.lower() for t in filters['topics']]
+                chunk_topics = [t.lower() for t in topics]
+                if not any(ft in chunk_topics for ft in filter_topics):
+                    return False
+            
+            # Filter by importance score
+            if 'min_importance' in filters:
+                if (importance_score or 0.5) < filters['min_importance']:
+                    return False
+            
+            # Filter by has_decisions
+            if 'has_decisions' in filters and filters['has_decisions']:
+                if not decisions:
+                    return False
+            
+            # Filter by has_actions
+            if 'has_actions' in filters and filters['has_actions']:
+                if not actions:
+                    return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error applying filters: {e}")
+            return True  # Include chunk if filter check fails
+    
+    def _reconstruct_chunk_context(self, chunk: DocumentChunk) -> Dict:
+        """Reconstruct complete context around a chunk"""
+        context = {
+            'context_before': chunk.context_before or '',
+            'context_after': chunk.context_after or '',
+            'enhanced_content': chunk.enhanced_content or chunk.content,
+            'related_chunks': [],
+            'meeting_context': {},
+            'speaker_analysis': {}
+        }
+        
+        try:
+            # Get meeting context
+            if chunk.document_id:
+                meeting_context = self._get_meeting_context(chunk.document_id)
+                context['meeting_context'] = meeting_context
+            
+            # Get related chunks from same document
+            related_chunks = self._get_related_chunks(chunk)
+            context['related_chunks'] = related_chunks
+            
+            # Analyze speaker contributions in this chunk
+            if chunk.speakers:
+                speakers = json.loads(chunk.speakers)
+                speaker_contributions = json.loads(chunk.speaker_contributions) if chunk.speaker_contributions else {}
+                context['speaker_analysis'] = {
+                    'speakers_in_chunk': speakers,
+                    'contributions': speaker_contributions
+                }
+            
+        except Exception as e:
+            logger.error(f"Error reconstructing context for chunk {chunk.chunk_id}: {e}")
+        
+        return context
+    
+    def _get_meeting_context(self, document_id: str) -> Dict:
+        """Get meeting-level context for a document"""
+        context = {}
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT title, date, main_topics, participants
+                FROM documents WHERE document_id = ?
+            ''', (document_id,))
+            
+            row = cursor.fetchone()
+            if row:
+                context = {
+                    'meeting_title': row[0],
+                    'meeting_date': row[1],
+                    'main_topics': json.loads(row[2]) if row[2] else [],
+                    'participants': json.loads(row[3]) if row[3] else []
+                }
+            
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"Error getting meeting context: {e}")
+        
+        return context
+    
+    def _get_related_chunks(self, chunk: DocumentChunk, max_related: int = 3) -> List[Dict]:
+        """Get related chunks from the same document"""
+        related = []
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Get chunks from same document near this chunk
+            cursor.execute('''
+                SELECT chunk_id, chunk_index, content, chunk_type, importance_score
+                FROM chunks 
+                WHERE document_id = ? AND chunk_id != ?
+                ORDER BY ABS(chunk_index - ?) ASC
+                LIMIT ?
+            ''', (chunk.document_id, chunk.chunk_id, chunk.chunk_index, max_related))
+            
+            for row in cursor.fetchall():
+                related.append({
+                    'chunk_id': row[0],
+                    'chunk_index': row[1],
+                    'content_preview': row[2][:200] + "..." if len(row[2]) > 200 else row[2],
+                    'chunk_type': row[3],
+                    'importance_score': row[4]
+                })
+            
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"Error getting related chunks: {e}")
+        
+        return related
     
     def get_documents_by_timeframe(self, timeframe: str, user_id: str = None) -> List[MeetingDocument]:
         """Get documents filtered by intelligent timeframe calculation"""
@@ -832,12 +1217,14 @@ class VectorDatabase:
         {full_context}
 
         Provide a direct, helpful answer that addresses exactly what the user wants to know about {timeframe_display}.
+        
+        IMPORTANT: When referencing information, always cite the specific document filename rather than document numbers or chunk references.
         """
         
         try:
             # Use class LLM instance
             messages = [
-                SystemMessage(content="You are a helpful AI assistant that answers questions about meeting documents naturally. Focus on what the user specifically asked for rather than forcing a predetermined structure."),
+                SystemMessage(content="You are a helpful AI assistant that answers questions about meeting documents naturally. Focus on what the user specifically asked for rather than forcing a predetermined structure. Always cite document filenames rather than chunk numbers when referencing information."),
                 HumanMessage(content=summary_prompt)
             ]
             
@@ -1853,12 +2240,14 @@ class EnhancedMeetingDocumentProcessor:
         {full_context}
 
         Provide a direct, helpful answer that addresses exactly what the user wants to know about {timeframe_display}.
+        
+        IMPORTANT: When referencing information, always cite the specific document filename rather than document numbers or chunk references.
         """
         
         try:
             # Use class LLM instance
             messages = [
-                SystemMessage(content="You are a helpful AI assistant that answers questions about meeting documents naturally. Focus on what the user specifically asked for rather than forcing a predetermined structure."),
+                SystemMessage(content="You are a helpful AI assistant that answers questions about meeting documents naturally. Focus on what the user specifically asked for rather than forcing a predetermined structure. Always cite document filenames rather than chunk numbers when referencing information."),
                 HumanMessage(content=summary_prompt)
             ]
             
@@ -2112,15 +2501,204 @@ class EnhancedMeetingDocumentProcessor:
             meeting_id=meeting_id
         )
     
-    def chunk_document(self, document: MeetingDocument) -> List[DocumentChunk]:
-        """Split document into chunks with embeddings"""
-        # Split content into chunks
-        chunks = self.text_splitter.split_text(document.content)
+    def extract_meeting_intelligence(self, content: str, max_tokens: int = 115000) -> Dict:
+        """Extract comprehensive meeting intelligence using LLM"""
+        try:
+            # Estimate content tokens and handle large meetings
+            estimated_tokens = len(content.split()) * 1.3  # Rough estimation
+            
+            if estimated_tokens > max_tokens:
+                # For large meetings, process in windows
+                return self._extract_intelligence_windowed(content, max_tokens)
+            else:
+                # Single pass for smaller meetings
+                return self._extract_intelligence_single_pass(content)
+                
+        except Exception as e:
+            logger.error(f"Error extracting meeting intelligence: {e}")
+            return self._create_fallback_intelligence()
+    
+    def _extract_intelligence_single_pass(self, content: str) -> Dict:
+        """Extract intelligence in single LLM call"""
+        intelligence_prompt = f"""
+        COMPREHENSIVE MEETING INTELLIGENCE EXTRACTION
+        
+        Meeting Content:
+        {content}
+        
+        Extract ALL information and structure as JSON:
+        
+        {{
+            "meeting_metadata": {{
+                "meeting_type": "standup/planning/demo/review/discussion",
+                "main_purpose": "brief description of meeting purpose",
+                "duration_estimate": "estimated duration if mentioned",
+                "meeting_effectiveness": "productive/average/ineffective"
+            }},
+            "participants": [
+                {{
+                    "name": "Full Name",
+                    "role": "role if mentioned",
+                    "contribution_summary": "what they primarily discussed",
+                    "speaking_frequency": "high/medium/low",
+                    "key_statements": ["important quotes"],
+                    "questions_asked": ["questions they posed"],
+                    "decisions_influenced": ["decisions they affected"],
+                    "expertise_demonstrated": ["areas of knowledge shown"]
+                }}
+            ],
+            "topics_discussed": [
+                {{
+                    "topic": "topic name",
+                    "discussed_by": ["speaker1", "speaker2"],
+                    "key_points": ["point1", "point2"],
+                    "outcome": "decision/action/discussion",
+                    "outcome_details": "specific outcome",
+                    "importance_score": 0.8
+                }}
+            ],
+            "decisions_made": [
+                {{
+                    "decision": "what was decided",
+                    "decided_by": "who made decision",
+                    "context": "why this decision",
+                    "impact": "what this affects",
+                    "implementation_notes": "how to implement"
+                }}
+            ],
+            "action_items": [
+                {{
+                    "task": "what needs to be done",
+                    "assigned_to": "person responsible",
+                    "due_date": "if mentioned",
+                    "priority": "high/medium/low",
+                    "dependencies": ["other tasks"],
+                    "context": "why this task is needed"
+                }}
+            ],
+            "questions_and_answers": [
+                {{
+                    "question": "what was asked",
+                    "asked_by": "who asked",
+                    "answered_by": "who responded",
+                    "answer": "response given",
+                    "resolved": true
+                }}
+            ],
+            "meeting_flow": {{
+                "opening_discussion": "how meeting started",
+                "main_discussion_points": ["point1", "point2"],
+                "key_transitions": ["transition descriptions"],
+                "closing_notes": "how meeting ended"
+            }},
+            "contextual_references": {{
+                "previous_meetings_mentioned": ["meeting references"],
+                "external_projects_mentioned": ["project names"],
+                "systems_discussed": ["system names"],
+                "deadlines_mentioned": ["deadline references"]
+            }},
+            "searchable_metadata": {{
+                "all_names_mentioned": ["name1", "name2"],
+                "technical_terms": ["term1", "term2"], 
+                "project_names": ["project1", "project2"],
+                "key_phrases": ["phrase1", "phrase2"],
+                "sentiment_tone": "positive/neutral/negative",
+                "urgency_level": "high/medium/low"
+            }}
+        }}
+        
+        Be extremely thorough. Extract every piece of information that could be useful for future queries.
+        Include speaker attributions for all content. Preserve context and nuance.
+        """
+        
+        try:
+            messages = [
+                SystemMessage(content="You are an expert meeting intelligence analyst. Always return valid JSON with comprehensive information extraction."),
+                HumanMessage(content=intelligence_prompt)
+            ]
+            
+            response = self.llm.invoke(messages)
+            content_str = response.content.strip()
+            
+            # Clean JSON response
+            if content_str.startswith('```json'):
+                content_str = content_str[7:-3].strip()
+            elif content_str.startswith('```'):
+                content_str = content_str[3:-3].strip()
+            
+            intelligence_data = json.loads(content_str)
+            logger.info("Successfully extracted meeting intelligence")
+            return intelligence_data
+            
+        except Exception as e:
+            logger.error(f"Error in single-pass intelligence extraction: {e}")
+            return self._create_fallback_intelligence()
+    
+    def _extract_intelligence_windowed(self, content: str, max_tokens: int) -> Dict:
+        """Extract intelligence from large meetings using windowed approach"""
+        # For now, use truncated content for large meetings
+        # TODO: Implement full windowed processing if needed
+        truncated_content = content[:max_tokens * 3]  # Rough token-to-char conversion
+        logger.warning(f"Content truncated for intelligence extraction: {len(content)} -> {len(truncated_content)} characters")
+        return self._extract_intelligence_single_pass(truncated_content)
+    
+    def _create_fallback_intelligence(self) -> Dict:
+        """Create fallback intelligence structure when extraction fails"""
+        return {
+            "meeting_metadata": {
+                "meeting_type": "discussion",
+                "main_purpose": "General meeting discussion",
+                "duration_estimate": "unknown",
+                "meeting_effectiveness": "average"
+            },
+            "participants": [],
+            "topics_discussed": [],
+            "decisions_made": [],
+            "action_items": [],
+            "questions_and_answers": [],
+            "meeting_flow": {
+                "opening_discussion": "Meeting discussion",
+                "main_discussion_points": [],
+                "key_transitions": [],
+                "closing_notes": "Meeting concluded"
+            },
+            "contextual_references": {
+                "previous_meetings_mentioned": [],
+                "external_projects_mentioned": [],
+                "systems_discussed": [],
+                "deadlines_mentioned": []
+            },
+            "searchable_metadata": {
+                "all_names_mentioned": [],
+                "technical_terms": [],
+                "project_names": [],
+                "key_phrases": [],
+                "sentiment_tone": "neutral",
+                "urgency_level": "medium"
+            }
+        }
+    
+    def chunk_document(self, document: MeetingDocument, intelligence_data: Dict = None) -> List[DocumentChunk]:
+        """Split document into intelligent chunks with enhanced metadata"""
+        # Extract intelligence if not provided
+        if intelligence_data is None:
+            intelligence_data = self.extract_meeting_intelligence(document.content)
+        
+        # Create intelligent chunks with context preservation
+        intelligent_chunks = self._create_intelligent_chunks(document, intelligence_data)
+        
+        document.chunk_count = len(intelligent_chunks)
+        return intelligent_chunks
+    
+    def _create_intelligent_chunks(self, document: MeetingDocument, intelligence_data: Dict) -> List[DocumentChunk]:
+        """Create intelligent chunks with rich metadata"""
+        # Split content into base chunks
+        base_chunks = self.text_splitter.split_text(document.content)
         
         document_chunks = []
         current_pos = 0
         
-        for i, chunk_content in enumerate(chunks):
+        for i, chunk_content in enumerate(base_chunks):
             chunk_id = f"{document.document_id}_chunk_{i}"
             
             # Find start position in original content
@@ -2143,6 +2721,10 @@ class EnhancedMeetingDocumentProcessor:
                 logger.error(f"Error generating embedding for chunk {chunk_id}: {e}")
                 embedding_array = np.zeros(3072)
             
+            # Extract chunk-specific intelligence
+            chunk_intelligence = self._extract_chunk_intelligence(chunk_content, intelligence_data, i, len(base_chunks))
+            
+            # Create enhanced chunk with metadata
             chunk = DocumentChunk(
                 chunk_id=chunk_id,
                 document_id=document.document_id,
@@ -2154,10 +2736,201 @@ class EnhancedMeetingDocumentProcessor:
                 embedding=embedding_array
             )
             
+            # Add intelligence metadata
+            chunk.enhanced_content = self._create_enhanced_content(chunk_content, chunk_intelligence)
+            chunk.chunk_type = chunk_intelligence.get('chunk_type', 'discussion')
+            chunk.speakers = json.dumps(chunk_intelligence.get('speakers', []))
+            chunk.speaker_contributions = json.dumps(chunk_intelligence.get('speaker_contributions', {}))
+            chunk.topics = json.dumps(chunk_intelligence.get('topics', []))
+            chunk.decisions = json.dumps(chunk_intelligence.get('decisions', []))
+            chunk.actions = json.dumps(chunk_intelligence.get('actions', []))
+            chunk.questions = json.dumps(chunk_intelligence.get('questions', []))
+            chunk.context_before = chunk_intelligence.get('context_before', '')
+            chunk.context_after = chunk_intelligence.get('context_after', '')
+            chunk.key_phrases = json.dumps(chunk_intelligence.get('key_phrases', []))
+            chunk.importance_score = chunk_intelligence.get('importance_score', 0.5)
+            
             document_chunks.append(chunk)
         
-        document.chunk_count = len(document_chunks)
         return document_chunks
+    
+    def _extract_chunk_intelligence(self, chunk_content: str, meeting_intelligence: Dict, chunk_index: int, total_chunks: int) -> Dict:
+        """Extract intelligence metadata for a specific chunk"""
+        chunk_intel = {
+            'chunk_type': 'discussion',
+            'speakers': [],
+            'speaker_contributions': {},
+            'topics': [],
+            'decisions': [],
+            'actions': [],
+            'questions': [],
+            'context_before': '',
+            'context_after': '',
+            'key_phrases': [],
+            'importance_score': 0.5
+        }
+        
+        try:
+            # Extract speakers mentioned in this chunk
+            all_participants = meeting_intelligence.get('participants', [])
+            chunk_speakers = []
+            chunk_speaker_contributions = {}
+            
+            logger.info(f"Processing chunk {chunk_index}: Found {len(all_participants)} participants in intelligence data")
+            if all_participants:
+                logger.info(f"Participants: {[p.get('name', 'Unknown') for p in all_participants]}")
+            
+            for participant in all_participants:
+                participant_name = participant.get('name', '')
+                if participant_name:
+                    # Enhanced name matching to handle different formats
+                    name_parts = participant_name.split()
+                    chunk_lower = chunk_content.lower()
+                    
+                    # Check multiple matching strategies
+                    matched = False
+                    
+                    # Strategy 1: Exact name match
+                    if participant_name.lower() in chunk_lower:
+                        matched = True
+                    
+                    # Strategy 2: Last name, First name format (common in meeting transcripts)
+                    elif len(name_parts) >= 2:
+                        # Try "Last, First" format
+                        last_first = f"{name_parts[-1]}, {' '.join(name_parts[:-1])}"
+                        if last_first.lower() in chunk_lower:
+                            matched = True
+                        
+                        # Try individual name parts
+                        elif any(part.lower() in chunk_lower for part in name_parts if len(part) > 2):
+                            matched = True
+                    
+                    # Strategy 3: Check if any significant name part appears
+                    elif any(part.lower() in chunk_lower for part in name_parts if len(part) > 2):
+                        matched = True
+                    
+                    if matched:
+                        chunk_speakers.append(participant_name)
+                        chunk_speaker_contributions[participant_name] = {
+                            'contribution_summary': participant.get('contribution_summary', ''),
+                            'speaking_frequency': participant.get('speaking_frequency', 'low')
+                        }
+                        logger.info(f"Found speaker {participant_name} in chunk {chunk_index}")
+            
+            if not chunk_speakers and all_participants:
+                logger.info(f"No speakers matched in chunk {chunk_index}. First 200 chars: {chunk_content[:200]}")
+            
+            # Extract topics relevant to this chunk
+            chunk_topics = []
+            for topic in meeting_intelligence.get('topics_discussed', []):
+                topic_name = topic.get('topic', '')
+                if any(keyword.lower() in chunk_content.lower() for keyword in topic.get('key_points', [])):
+                    chunk_topics.append(topic_name)
+            
+            # Extract decisions relevant to this chunk
+            chunk_decisions = []
+            for decision in meeting_intelligence.get('decisions_made', []):
+                decision_text = decision.get('decision', '')
+                if any(word in chunk_content.lower() for word in decision_text.lower().split()[:5]):
+                    chunk_decisions.append(decision)
+            
+            # Extract action items relevant to this chunk
+            chunk_actions = []
+            for action in meeting_intelligence.get('action_items', []):
+                action_text = action.get('task', '')
+                if any(word in chunk_content.lower() for word in action_text.lower().split()[:5]):
+                    chunk_actions.append(action)
+            
+            # Extract Q&A relevant to this chunk
+            chunk_questions = []
+            for qa in meeting_intelligence.get('questions_and_answers', []):
+                question_text = qa.get('question', '')
+                if any(word in chunk_content.lower() for word in question_text.lower().split()[:5]):
+                    chunk_questions.append(qa)
+            
+            # Determine chunk type based on content
+            chunk_type = 'discussion'
+            if chunk_decisions:
+                chunk_type = 'decision'
+            elif chunk_actions:
+                chunk_type = 'action_planning'
+            elif chunk_questions:
+                chunk_type = 'qa'
+            
+            # Calculate importance score
+            importance_score = 0.5
+            if chunk_decisions:
+                importance_score += 0.3
+            if chunk_actions:
+                importance_score += 0.2
+            if len(chunk_speakers) > 1:
+                importance_score += 0.1
+            importance_score = min(importance_score, 1.0)
+            
+            # Extract key phrases from chunk
+            chunk_phrases = []
+            searchable_metadata = meeting_intelligence.get('searchable_metadata', {})
+            for phrase in searchable_metadata.get('key_phrases', []):
+                if phrase.lower() in chunk_content.lower():
+                    chunk_phrases.append(phrase)
+            
+            # Set context
+            context_before = f"Chunk {chunk_index + 1} of {total_chunks}"
+            context_after = f"Part of {meeting_intelligence.get('meeting_metadata', {}).get('main_purpose', 'meeting discussion')}"
+            
+            # Update chunk intelligence
+            chunk_intel.update({
+                'chunk_type': chunk_type,
+                'speakers': chunk_speakers,
+                'speaker_contributions': chunk_speaker_contributions,
+                'topics': chunk_topics,
+                'decisions': chunk_decisions,
+                'actions': chunk_actions,
+                'questions': chunk_questions,
+                'context_before': context_before,
+                'context_after': context_after,
+                'key_phrases': chunk_phrases,
+                'importance_score': importance_score
+            })
+            
+        except Exception as e:
+            logger.error(f"Error extracting chunk intelligence: {e}")
+        
+        return chunk_intel
+    
+    def _create_enhanced_content(self, original_content: str, chunk_intelligence: Dict) -> str:
+        """Create enhanced content with context and speaker attribution"""
+        enhanced_parts = []
+        
+        # Add context header
+        context_before = chunk_intelligence.get('context_before', '')
+        if context_before:
+            enhanced_parts.append(f"[Context: {context_before}]")
+        
+        # Add speaker information
+        speakers = chunk_intelligence.get('speakers', [])
+        if speakers:
+            enhanced_parts.append(f"[Speakers: {', '.join(speakers)}]")
+        
+        # Add chunk type
+        chunk_type = chunk_intelligence.get('chunk_type', 'discussion')
+        enhanced_parts.append(f"[Type: {chunk_type}]")
+        
+        # Add original content
+        enhanced_parts.append(original_content)
+        
+        # Add summary of decisions/actions if present
+        decisions = chunk_intelligence.get('decisions', [])
+        if decisions:
+            decision_summary = "; ".join([d.get('decision', '') for d in decisions[:2]])
+            enhanced_parts.append(f"[Decisions: {decision_summary}]")
+        
+        actions = chunk_intelligence.get('actions', [])
+        if actions:
+            action_summary = "; ".join([a.get('task', '') for a in actions[:2]])
+            enhanced_parts.append(f"[Actions: {action_summary}]")
+        
+        return "\n".join(enhanced_parts)
     
     def process_documents(self, document_folder: str) -> None:
         """Process all documents in a folder with chunking and vector storage"""
@@ -2268,6 +3041,242 @@ class EnhancedMeetingDocumentProcessor:
             if keyword in query_lower:
                 return True
         return False
+
+    def answer_query_with_intelligence(self, query: str, user_id: str, document_ids: List[str] = None, 
+                                     project_id: str = None, meeting_id: str = None, meeting_ids: List[str] = None, 
+                                     date_filters: List[str] = None, folder_path: str = None, 
+                                     context_limit: int = 10, include_context: bool = False) -> Union[str, Tuple[str, str]]:
+        """Answer user query using enhanced intelligence-aware search and context reconstruction"""
+        
+        try:
+            # Generate query embedding
+            if self.embedding_model is None:
+                logger.error("Embedding model not available")
+                return "Sorry, the system is not properly configured for queries.", ""
+            
+            query_embedding = self.embedding_model.embed_query(query)
+            query_vector = np.array(query_embedding)
+            
+            # Analyze query to determine filters
+            search_filters = self._analyze_query_for_filters(query)
+            
+            # Apply user context filters
+            if meeting_ids:
+                search_filters['meeting_ids'] = meeting_ids
+            if project_id:
+                search_filters['project_id'] = project_id
+            if date_filters:
+                search_filters['date_filters'] = date_filters
+            
+            # Perform enhanced search with metadata filtering
+            enhanced_results = self.vector_db.enhanced_search_with_metadata(
+                query_vector, user_id, search_filters, top_k=context_limit
+            )
+            
+            if not enhanced_results:
+                return "I couldn't find any relevant information for your query. Please try rephrasing or check if you have uploaded meeting documents.", ""
+            
+            # Generate context-aware response
+            response, context = self._generate_intelligence_response(query, enhanced_results, user_id)
+            
+            if include_context:
+                return response, context
+            else:
+                return response
+                
+        except Exception as e:
+            logger.error(f"Error in intelligence-aware query processing: {e}")
+            return f"I encountered an error while processing your query: {str(e)}", ""
+    
+    def _analyze_query_for_filters(self, query: str) -> Dict:
+        """Analyze query to determine appropriate metadata filters"""
+        filters = {}
+        query_lower = query.lower()
+        
+        # Detect speaker-specific queries
+        speaker_patterns = ['what did', 'what said', 'who said', 'mentioned by', 'according to']
+        if any(pattern in query_lower for pattern in speaker_patterns):
+            # Try to extract speaker names from query
+            potential_speakers = []
+            words = query.split()
+            
+            # Enhanced pattern matching for speaker extraction
+            for i, word in enumerate(words):
+                word_lower = word.lower()
+                if word_lower in ['what', 'who'] and i + 1 < len(words):
+                    next_word = words[i + 1].lower()
+                    if next_word in ['did', 'said']:
+                        # Look for the speaker name after "what did" or "who said"
+                        if i + 2 < len(words):
+                            speaker_name = words[i + 2].strip('.,?!').title()
+                            potential_speakers.append(speaker_name)
+                
+                # Also check for patterns like "sandeep said" or "according to john"
+                if word_lower in ['said', 'mentioned'] and i > 0:
+                    speaker_name = words[i - 1].strip('.,?!').title()
+                    potential_speakers.append(speaker_name)
+                elif word_lower == 'to' and i > 0 and words[i - 1].lower() == 'according':
+                    if i + 1 < len(words):
+                        speaker_name = words[i + 1].strip('.,?!').title()
+                        potential_speakers.append(speaker_name)
+            
+            # Remove duplicates and common words
+            common_words = {'the', 'in', 'at', 'on', 'for', 'with', 'by', 'from', 'meeting', 'discussion'}
+            potential_speakers = list(set([s for s in potential_speakers if s.lower() not in common_words]))
+            
+            if potential_speakers:
+                filters['speakers'] = potential_speakers
+                logger.info(f"Extracted speakers from query '{query}': {potential_speakers}")
+        
+        # Detect decision-focused queries
+        decision_patterns = ['decision', 'decided', 'conclusion', 'resolution', 'agreed']
+        if any(pattern in query_lower for pattern in decision_patterns):
+            filters['has_decisions'] = True
+            filters['chunk_type'] = ['decision', 'discussion']
+        
+        # Detect action item queries
+        action_patterns = ['action', 'task', 'todo', 'follow up', 'next steps', 'assigned']
+        if any(pattern in query_lower for pattern in action_patterns):
+            filters['has_actions'] = True
+            filters['chunk_type'] = ['action_planning', 'discussion']
+        
+        # Detect high-importance queries
+        importance_patterns = ['important', 'critical', 'urgent', 'key', 'major']
+        if any(pattern in query_lower for pattern in importance_patterns):
+            filters['min_importance'] = 0.7
+        
+        return filters
+    
+    def _generate_intelligence_response(self, query: str, enhanced_results: List[Dict], user_id: str) -> Tuple[str, str]:
+        """Generate response using enhanced intelligence data"""
+        
+        # Prepare comprehensive context from enhanced results
+        context_parts = []
+        speaker_contributions = {}
+        decisions_made = []
+        actions_identified = []
+        meeting_contexts = []
+        
+        for result in enhanced_results:
+            chunk = result['chunk']
+            context = result['context']
+            metadata = result['metadata']
+            
+            # Collect context information
+            context_part = f"**From {context['meeting_context'].get('meeting_title', 'Meeting')} ({context['meeting_context'].get('meeting_date', 'Unknown date')})**\n"
+            context_part += f"Content: {chunk.enhanced_content or chunk.content}\n"
+            
+            if metadata['speakers']:
+                context_part += f"Speakers: {', '.join(metadata['speakers'])}\n"
+            
+            if metadata['decisions']:
+                context_part += f"Decisions: {'; '.join([d.get('decision', '') for d in metadata['decisions'][:2]])}\n"
+                decisions_made.extend(metadata['decisions'])
+            
+            if metadata['actions']:
+                context_part += f"Actions: {'; '.join([a.get('task', '') for a in metadata['actions'][:2]])}\n"
+                actions_identified.extend(metadata['actions'])
+            
+            context_part += f"Relevance Score: {result['relevance_score']:.3f}\n\n"
+            context_parts.append(context_part)
+            
+            # Collect speaker data
+            for speaker in metadata['speakers']:
+                if speaker not in speaker_contributions:
+                    speaker_contributions[speaker] = []
+                speaker_contributions[speaker].append({
+                    'content': chunk.content[:200] + "..." if len(chunk.content) > 200 else chunk.content,
+                    'meeting': context['meeting_context'].get('meeting_title', 'Unknown'),
+                    'date': context['meeting_context'].get('meeting_date', 'Unknown')
+                })
+            
+            # Collect meeting context
+            meeting_context = context['meeting_context']
+            if meeting_context and meeting_context not in meeting_contexts:
+                meeting_contexts.append(meeting_context)
+        
+        # Create comprehensive context string
+        full_context = "COMPREHENSIVE MEETING INTELLIGENCE:\n\n" + "\n".join(context_parts)
+        
+        # Generate enhanced response prompt
+        response_prompt = f"""
+        Based on the comprehensive meeting intelligence provided, answer the user's query with complete accuracy and context.
+        
+        USER QUERY: "{query}"
+        
+        MEETING INTELLIGENCE CONTEXT:
+        {full_context}
+        
+        SPEAKER ANALYSIS:
+        {self._format_speaker_analysis(speaker_contributions)}
+        
+        DECISIONS SUMMARY:
+        {self._format_decisions_summary(decisions_made)}
+        
+        ACTION ITEMS SUMMARY:
+        {self._format_actions_summary(actions_identified)}
+        
+        INSTRUCTIONS:
+        1. Answer the user's query directly and comprehensively
+        2. Include specific speaker attributions when relevant
+        3. Reference specific meetings and dates
+        4. Include related decisions and action items
+        5. Maintain chronological context when applicable
+        6. Use the enhanced context to provide complete information
+        
+        Provide a detailed, accurate response that leverages all the intelligence available.
+        """
+        
+        try:
+            messages = [
+                SystemMessage(content="You are an expert meeting intelligence assistant. Provide comprehensive, accurate responses using all available context and speaker attributions."),
+                HumanMessage(content=response_prompt)
+            ]
+            
+            response = self.llm.invoke(messages)
+            return response.content.strip(), full_context
+            
+        except Exception as e:
+            logger.error(f"Error generating intelligence response: {e}")
+            return f"I found relevant information but encountered an error generating the response: {str(e)}", full_context
+    
+    def _format_speaker_analysis(self, speaker_contributions: Dict) -> str:
+        """Format speaker contribution analysis"""
+        if not speaker_contributions:
+            return "No specific speaker contributions identified."
+        
+        analysis = []
+        for speaker, contributions in speaker_contributions.items():
+            contrib_summary = f"{speaker}: {len(contributions)} contributions across {len(set(c['meeting'] for c in contributions))} meetings"
+            analysis.append(contrib_summary)
+        
+        return "\n".join(analysis)
+    
+    def _format_decisions_summary(self, decisions: List[Dict]) -> str:
+        """Format decisions summary"""
+        if not decisions:
+            return "No specific decisions identified."
+        
+        summary = []
+        for decision in decisions[:5]:  # Limit to top 5
+            dec_text = decision.get('decision', 'Unknown decision')
+            decided_by = decision.get('decided_by', 'Unknown')
+            summary.append(f"- {dec_text} (by {decided_by})")
+        
+        return "\n".join(summary)
+    
+    def _format_actions_summary(self, actions: List[Dict]) -> str:
+        """Format action items summary"""
+        if not actions:
+            return "No specific action items identified."
+        
+        summary = []
+        for action in actions[:5]:  # Limit to top 5
+            task = action.get('task', 'Unknown task')
+            assigned_to = action.get('assigned_to', 'Unknown')
+            summary.append(f"- {task} (assigned to {assigned_to})")
+        
+        return "\n".join(summary)
 
     def answer_query(self, query: str, user_id: str, document_ids: List[str] = None, project_id: str = None, meeting_id: str = None, meeting_ids: List[str] = None, date_filters: List[str] = None, folder_path: str = None, context_limit: int = 10, include_context: bool = False) -> Union[str, Tuple[str, str]]:
         """Answer user query using hybrid search and intelligent context selection"""
@@ -2407,11 +3416,13 @@ Meeting Document Context:
 {context}
 
 Please answer the user's question naturally and directly based on the meeting documents. Focus on what they specifically asked for, using relevant details from the documents. Don't follow a rigid format - just provide a helpful, conversational response that addresses their actual question.
+
+IMPORTANT: When referencing information from the documents, always cite the document filename (e.g., "Document_Fulfillment_AIML-20250714_153021-Meeting_Recording.docx") rather than chunk numbers. This helps users know which specific document the information comes from.
 """
         
         try:
             messages = [
-                SystemMessage(content="You are a helpful AI assistant that answers questions about meeting documents naturally and conversationally. Answer exactly what the user asks for without forcing predetermined structures."),
+                SystemMessage(content="You are a helpful AI assistant that answers questions about meeting documents naturally and conversationally. Answer exactly what the user asks for without forcing predetermined structures. Always cite document filenames rather than chunk numbers when referencing information."),
                 HumanMessage(content=answer_prompt)
             ]
             
@@ -2424,7 +3435,7 @@ Please answer the user's question naturally and directly based on the meeting do
             try:
                 self.refresh_clients()
                 messages = [
-                    SystemMessage(content="You are a helpful AI assistant that answers questions about meeting documents naturally and conversationally. Answer exactly what the user asks for without forcing predetermined structures."),
+                    SystemMessage(content="You are a helpful AI assistant that answers questions about meeting documents naturally and conversationally. Answer exactly what the user asks for without forcing predetermined structures. Always cite document filenames rather than chunk numbers when referencing information."),
                     HumanMessage(content=answer_prompt)
                 ]
                 response = self.llm.invoke(messages)
@@ -2611,10 +3622,12 @@ Document Content from {total_files} files:
 {self._format_content_for_analysis(content_chunks)}
 
 Please answer the user's question naturally and thoroughly using information from all the files. Focus on exactly what they asked for without forcing any predetermined structure.
+
+IMPORTANT: When referencing information, always cite the specific document filename rather than document numbers or chunk references. This helps users identify the source document.
 """
 
             messages = [
-                SystemMessage(content=f"You are an expert analyst with access to {total_files} meeting documents. Answer user questions naturally and comprehensively based on all available information."),
+                SystemMessage(content=f"You are an expert analyst with access to {total_files} meeting documents. Answer user questions naturally and comprehensively based on all available information. Always cite document filenames rather than document numbers when referencing information."),
                 HumanMessage(content=flexible_prompt)
             ]
             
@@ -2721,158 +3734,92 @@ Participants: {chunk['participants']}
         
         return "\n".join(formatted_content)
 
-    # File Deduplication Methods
-    def calculate_file_hash(self, file_path: str) -> str:
-        """Calculate SHA-256 hash of a file"""
-        hasher = hashlib.sha256()
-        try:
-            with open(file_path, 'rb') as f:
-                for chunk in iter(lambda: f.read(4096), b""):
-                    hasher.update(chunk)
-            return hasher.hexdigest()
-        except Exception as e:
-            logger.error(f"Error calculating hash for {file_path}: {e}")
-            raise
-
-    def is_file_duplicate(self, file_hash: str, filename: str, user_id: str) -> Optional[Dict]:
-        """Check if file is a duplicate based on hash and return original file info"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute('''
-                SELECT hash_id, filename, original_filename, created_at, document_id
-                FROM file_hashes 
-                WHERE file_hash = ? AND user_id = ?
-                ORDER BY created_at DESC
-                LIMIT 1
-            ''', (file_hash, user_id))
-            
-            result = cursor.fetchone()
-            if result:
-                return {
-                    'hash_id': result[0],
-                    'filename': result[1],
-                    'original_filename': result[2],
-                    'created_at': result[3],
-                    'document_id': result[4]
-                }
-            return None
-        finally:
-            conn.close()
-
-    def store_file_hash(self, file_hash: str, filename: str, original_filename: str, 
-                       file_size: int, user_id: str, project_id: str = None, 
-                       meeting_id: str = None, document_id: str = None) -> str:
-        """Store file hash for deduplication"""
-        hash_id = f"hash_{uuid.uuid4().hex[:8]}"
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute('''
-                INSERT INTO file_hashes 
-                (hash_id, filename, original_filename, file_size, file_hash, 
-                 user_id, project_id, meeting_id, document_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (hash_id, filename, original_filename, file_size, file_hash, 
-                  user_id, project_id, meeting_id, document_id))
-            conn.commit()
-            return hash_id
-        except sqlite3.IntegrityError:
-            logger.warning(f"File hash {file_hash} already exists for user {user_id}")
-            raise
-        finally:
-            conn.close()
-
-    # Background Processing Methods
-    def create_upload_job(self, user_id: str, total_files: int, project_id: str = None, 
-                         meeting_id: str = None) -> str:
-        """Create a new upload job for tracking progress"""
-        job_id = f"job_{uuid.uuid4().hex[:8]}"
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute('''
-                INSERT INTO upload_jobs 
-                (job_id, user_id, project_id, meeting_id, total_files, status)
-                VALUES (?, ?, ?, ?, ?, 'pending')
-            ''', (job_id, user_id, project_id, meeting_id, total_files))
-            conn.commit()
-            logger.info(f"Created upload job {job_id} for {total_files} files")
-            return job_id
-        finally:
-            conn.close()
-
-    def process_file_async(self, file_path: str, filename: str, user_id: str, 
-                          project_id: str = None, meeting_id: str = None, 
+    def process_file_async(self, file_path: str, filename: str, user_id: str,
+                          project_id: str = None, meeting_id: str = None,
                           job_id: str = None, status_id: str = None) -> Dict:
         """Process a single file asynchronously"""
         try:
+            # Update status
+            if status_id:
+                self.vector_db.update_file_processing_status(status_id, 'processing')
+            
             # Calculate file hash
             file_hash = self.vector_db.calculate_file_hash(file_path)
             file_size = os.path.getsize(file_path)
             
-            # Check for duplicates
+            # Check for duplicates again (safety check)
             duplicate_info = self.vector_db.is_file_duplicate(file_hash, filename, user_id)
             if duplicate_info:
-                logger.info(f"File {filename} is a duplicate of {duplicate_info['original_filename']}")
+                if status_id:
+                    self.vector_db.update_file_processing_status(status_id, 'skipped', 
+                                                               f"Duplicate of {duplicate_info['original_filename']}")
                 return {
                     'success': False,
+                    'error': f'Duplicate file: {duplicate_info["original_filename"]}',
                     'is_duplicate': True,
-                    'duplicate_info': duplicate_info,
-                    'message': f"File is a duplicate of {duplicate_info['original_filename']}"
+                    'duplicate_info': duplicate_info
                 }
             
-            # Update file processing status
-            if status_id:
-                self.vector_db.update_file_processing_status(status_id, 'processing')
-            
-            # Process the file
-            logger.info(f"Processing file: {filename}")
-            
-            # Read document content
+            # Extract content
             content = self.read_document_content(file_path)
             if not content.strip():
-                error_msg = f"No content extracted from {filename}"
                 if status_id:
-                    self.vector_db.update_file_processing_status(status_id, 'failed', error_msg)
-                return {'success': False, 'error': error_msg}
+                    self.vector_db.update_file_processing_status(status_id, 'failed', 'Empty file content')
+                return {'success': False, 'error': 'Empty file content'}
             
-            # Parse document
-            meeting_doc = self.parse_document_content(content, filename, user_id, project_id, meeting_id)
+            # Store file metadata
+            document_id = self.vector_db.store_document_metadata(
+                filename, content, user_id, project_id, meeting_id
+            )
             
-            # Create chunks with embeddings
+            # Store file hash for deduplication
+            hash_id = self.vector_db.store_file_hash(
+                file_hash, filename, filename, file_size, user_id,
+                project_id, meeting_id, document_id
+            )
+            
+            # Create MeetingDocument object for processing
+            meeting_doc = MeetingDocument(
+                document_id=document_id,
+                filename=filename,
+                date=datetime.now(),
+                title=filename,
+                content=content,
+                content_summary="",
+                main_topics=[],
+                past_events=[],
+                future_actions=[],
+                participants=[],
+                user_id=user_id,
+                meeting_id=meeting_id,
+                project_id=project_id,
+                file_size=file_size
+            )
+            
+            # Process with enhanced chunking
             chunks = self.chunk_document(meeting_doc)
             
-            # Store in database
+            # Store document and chunks together using the existing add_document method
             self.vector_db.add_document(meeting_doc, chunks)
             
-            # Store file hash
-            self.vector_db.store_file_hash(file_hash, filename, filename, file_size, 
-                               user_id, project_id, meeting_id, meeting_doc.document_id)
-            
-            # Update file processing status
+            # Update final status
             if status_id:
                 self.vector_db.update_file_processing_status(status_id, 'completed', 
-                                                 document_id=meeting_doc.document_id, 
-                                                 chunks_created=len(chunks))
+                                                           f'Successfully processed {len(chunks)} chunks')
             
             logger.info(f"Successfully processed {filename} with {len(chunks)} chunks")
             return {
                 'success': True,
-                'document_id': meeting_doc.document_id,
+                'document_id': document_id,
                 'chunks_created': len(chunks),
-                'message': f"Successfully processed {filename}"
+                'hash_id': hash_id
             }
             
         except Exception as e:
-            error_msg = f"Error processing {filename}: {str(e)}"
-            logger.error(error_msg)
+            logger.error(f"Error processing file {filename}: {e}")
             if status_id:
-                self.vector_db.update_file_processing_status(status_id, 'failed', error_msg)
-            return {'success': False, 'error': error_msg}
+                self.vector_db.update_file_processing_status(status_id, 'failed', str(e))
+            return {'success': False, 'error': str(e)}
 
     def process_files_batch_async(self, files: List[Dict], user_id: str, 
                                  project_id: str = None, meeting_id: str = None, 

@@ -784,7 +784,7 @@ def chat():
                     combined_project_ids.extend(project_ids)
                 final_project_id = combined_project_ids[0] if combined_project_ids else None
                 
-                response, context = processor.answer_query(
+                response, context = processor.answer_query_with_intelligence(
                     message, 
                     user_id=user_id, 
                     document_ids=document_ids, 
