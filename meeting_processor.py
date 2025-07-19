@@ -2326,8 +2326,8 @@ class EnhancedMeetingDocumentProcessor:
             logger.error(f"Failed to refresh Azure clients: {e}")
             raise
     
-    def extract_date_from_filename(self, filename: str) -> datetime:
-        """Extract date from filename pattern with multiple formats"""
+    def extract_date_from_filename(self, filename: str, content: str = None) -> datetime:
+        """Extract date from filename pattern with multiple formats, fallback to content"""
         patterns = [
             r'(\d{8})_(\d{6})',  # YYYYMMDD_HHMMSS
             r'(\d{8})',          # YYYYMMDD
@@ -2350,8 +2350,97 @@ class EnhancedMeetingDocumentProcessor:
                 except ValueError:
                     continue
         
-        logger.warning(f"Could not extract date from filename: {filename}, using current date")
+        # Fallback: Extract date from file content if provided
+        if content:
+            try:
+                extracted_date = self.extract_date_from_content(content)
+                if extracted_date:
+                    logger.info(f"Extracted date from content for {filename}: {extracted_date}")
+                    return extracted_date
+            except Exception as e:
+                logger.warning(f"Failed to extract date from content for {filename}: {e}")
+        
+        logger.warning(f"Could not extract date from filename or content: {filename}, using current date")
         return datetime.now()
+    
+    def extract_date_from_content(self, content: str) -> Optional[datetime]:
+        """Extract date from meeting file content (line 2 typically contains date)"""
+        lines = content.strip().split('\n')
+        
+        if len(lines) < 2:
+            return None
+        
+        # Line 2 typically contains the date in format: "July 14, 2025, 3:00PM" or "June 27, 2025, 230 PM"
+        date_line = lines[1].strip()
+        
+        # Common date patterns in meeting transcripts
+        date_patterns = [
+            r'([A-Za-z]+\s+\d{1,2},\s+\d{4})',  # "July 14, 2025" or "June 27, 2025"
+            r'(\d{1,2}/\d{1,2}/\d{4})',         # "7/14/2025"
+            r'(\d{4}-\d{2}-\d{2})',             # "2025-07-14"
+            r'(\d{1,2}-\d{1,2}-\d{4})',         # "7-14-2025"
+        ]
+        
+        for pattern in date_patterns:
+            match = re.search(pattern, date_line)
+            if match:
+                date_str = match.group(1)
+                try:
+                    # Try different parsing formats
+                    parse_formats = [
+                        "%B %d, %Y",    # "July 14, 2025"
+                        "%b %d, %Y",    # "Jul 14, 2025"
+                        "%m/%d/%Y",     # "7/14/2025"
+                        "%Y-%m-%d",     # "2025-07-14"
+                        "%m-%d-%Y",     # "7-14-2025"
+                    ]
+                    
+                    for fmt in parse_formats:
+                        try:
+                            return datetime.strptime(date_str, fmt)
+                        except ValueError:
+                            continue
+                            
+                except Exception as e:
+                    logger.debug(f"Failed to parse date '{date_str}' with standard formats: {e}")
+                    continue
+        
+        # If no standard patterns work, try using AI to extract the date
+        return self.ai_extract_date_from_content(content)
+    
+    def ai_extract_date_from_content(self, content: str) -> Optional[datetime]:
+        """Use AI to extract meeting date from content when pattern matching fails"""
+        try:
+            # Get first few lines which typically contain metadata
+            first_lines = '\n'.join(content.strip().split('\n')[:5])
+            
+            extraction_prompt = f"""
+Extract the meeting date from this content. Return only the date in YYYY-MM-DD format.
+
+Content:
+{first_lines}
+
+Return only the date in YYYY-MM-DD format (e.g., 2025-07-14) or "NONE" if no date is found.
+"""
+
+            messages = [
+                SystemMessage(content="You are a date extraction expert. Extract meeting dates accurately and return them in YYYY-MM-DD format only."),
+                HumanMessage(content=extraction_prompt)
+            ]
+            
+            response = self.llm.invoke(messages)
+            date_str = response.content.strip()
+            
+            # Validate the response format
+            if re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
+                return datetime.strptime(date_str, "%Y-%m-%d")
+            else:
+                logger.debug(f"AI date extraction returned invalid format: {date_str}")
+                return None
+                
+        except Exception as e:
+            logger.warning(f"AI date extraction failed: {e}")
+            return None
     
     def read_document_content(self, file_path: str) -> str:
         """Read document content from file"""
@@ -2421,7 +2510,7 @@ class EnhancedMeetingDocumentProcessor:
     
     def parse_document_content(self, content: str, filename: str, user_id: str, project_id: str = None, meeting_id: str = None) -> MeetingDocument:
         """Parse a meeting document and extract structured information"""
-        doc_date = self.extract_date_from_filename(filename)
+        doc_date = self.extract_date_from_filename(filename, content)
         document_id = f"{filename}_{doc_date.strftime('%Y%m%d_%H%M%S')}"
         
         parsing_prompt = f"""
