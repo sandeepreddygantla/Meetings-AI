@@ -16,3 +16,6 @@ meeting_documents.db
 /logs/
 
 meeting_documents/
+
+/meeting_documents
+meeting_documents.db

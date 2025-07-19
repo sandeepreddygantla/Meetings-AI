@@ -3433,14 +3433,16 @@ User Question: {query}
 Meeting Document Context:
 {context}
 
-Please answer the user's question naturally and directly based on the meeting documents. Focus on what they specifically asked for, using relevant details from the documents. Don't follow a rigid format - just provide a helpful, conversational response that addresses their actual question.
+Please provide a detailed, conversational response to the user's question based on the meeting documents. Be thorough and comprehensive in your answer, including specific details, quotes, and context from the meetings. Avoid using structured formats with bullet points or section headers like "Key Topics" or "Decisions" unless the user specifically asks for that format.
+
+Write your response as if you're having a natural conversation with the user, providing rich detail and specific information from the meetings. Include relevant background context, specific quotes or examples, and elaborate on the important points.
 
 IMPORTANT: When referencing information from the documents, always cite the document filename (e.g., "Document_Fulfillment_AIML-20250714_153021-Meeting_Recording.docx") rather than chunk numbers. This helps users know which specific document the information comes from.
 """
         
         try:
             messages = [
-                SystemMessage(content="You are a helpful AI assistant that answers questions about meeting documents naturally and conversationally. Answer exactly what the user asks for without forcing predetermined structures."),
+                SystemMessage(content="You are a helpful AI assistant that provides detailed, conversational responses about meeting documents. Avoid structured formats with bullet points or headers unless specifically requested. Provide rich, comprehensive answers with specific details, quotes, and context. Always cite document filenames rather than chunk numbers when referencing information."),
                 HumanMessage(content=answer_prompt)
             ]
             
@@ -3453,7 +3455,7 @@ IMPORTANT: When referencing information from the documents, always cite the docu
             try:
                 self.refresh_clients()
                 messages = [
-                    SystemMessage(content="You are a helpful AI assistant that answers questions about meeting documents naturally and conversationally. Answer exactly what the user asks for without forcing predetermined structures. Always cite document filenames rather than chunk numbers when referencing information."),
+                    SystemMessage(content="You are a helpful AI assistant that provides detailed, conversational responses about meeting documents. Avoid structured formats with bullet points or headers unless specifically requested. Provide rich, comprehensive answers with specific details, quotes, and context. Always cite document filenames rather than chunk numbers when referencing information."),
                     HumanMessage(content=answer_prompt)
                 ]
                 response = self.llm.invoke(messages)
@@ -3639,13 +3641,15 @@ User Question: {query}
 Document Content from {total_files} files:
 {self._format_content_for_analysis(content_chunks)}
 
-Please answer the user's question naturally and thoroughly using information from all the files. Focus on exactly what they asked for without forcing any predetermined structure.
+Please provide a detailed, conversational response to the user's question using information from all the files. Be thorough and comprehensive, including specific details, quotes, and context. Avoid structured formats with bullet points or section headers unless the user specifically requests that format.
+
+Write as if you're having a natural conversation with the user, providing rich detail and specific information. Include relevant background context, specific quotes or examples, and elaborate on important points.
 
 IMPORTANT: When referencing information, always cite the specific document filename rather than document numbers or chunk references. This helps users identify the source document.
 """
 
             messages = [
-                SystemMessage(content=f"You are an expert analyst with access to {total_files} meeting documents. Answer user questions naturally and comprehensively based on all available information. Always cite document filenames rather than document numbers when referencing information."),
+                SystemMessage(content=f"You are an expert analyst with access to {total_files} meeting documents. Provide detailed, conversational responses that avoid structured formats unless specifically requested. Include rich details, quotes, and context in your comprehensive answers. Always cite document filenames rather than document numbers when referencing information."),
                 HumanMessage(content=flexible_prompt)
             ]
             
@@ -3744,10 +3748,10 @@ IMPORTANT: When referencing information, always cite the specific document filen
         
         for i, chunk in enumerate(content_chunks, 1):
             formatted_content.append(f"""
-Document {i}: {chunk['filename']} ({chunk['date']})
-Content: {chunk['content']}
-Key Topics: {chunk['topics']}
-Participants: {chunk['participants']}
+Document: {chunk['filename']} ({chunk['date']})
+
+{chunk['content']}
+
 {'='*60}""")
         
         return "\n".join(formatted_content)
