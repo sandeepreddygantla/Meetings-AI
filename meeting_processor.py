@@ -3380,12 +3380,13 @@ class EnhancedMeetingDocumentProcessor:
         for chunk in relevant_chunks:
             document_chunks[chunk.document_id].append(chunk)
         
-        # Select best chunks from each document (max 2 per document)
+        # Select best chunks from each document (more for summary queries)
         selected_chunks = []
+        chunks_per_doc = 5 if is_summary_query else 2  # More chunks for summaries
         for doc_id, chunks in document_chunks.items():
             # Sort chunks by position to maintain context
             chunks.sort(key=lambda x: x.chunk_index)
-            selected_chunks.extend(chunks[:2])  # Max 2 chunks per document
+            selected_chunks.extend(chunks[:chunks_per_doc])  # More chunks for summaries
         
         # Limit total chunks
         selected_chunks = selected_chunks[:context_limit]
@@ -3408,8 +3409,25 @@ class EnhancedMeetingDocumentProcessor:
         
         context = "\n".join(context_parts)
         
-        # Generate answer using OpenAI GPT-4o
-        answer_prompt = f"""
+        # Generate enhanced prompt for summary queries
+        if is_summary_query:
+            answer_prompt = f"""
+User Question: {query}
+
+Meeting Document Context:
+{context}
+
+This is a summary request. Please provide a comprehensive overview that includes:
+- Key topics and themes discussed across meetings
+- Important decisions made and their context
+- Action items and next steps identified
+- Any patterns or trends across the meetings
+- Significant outcomes or conclusions
+
+Organize the information in a clear, detailed manner. Be thorough - the user wants a complete picture, not just highlights.
+"""
+        else:
+            answer_prompt = f"""
 User Question: {query}
 
 Meeting Document Context:
@@ -3422,7 +3440,7 @@ IMPORTANT: When referencing information from the documents, always cite the docu
         
         try:
             messages = [
-                SystemMessage(content="You are a helpful AI assistant that answers questions about meeting documents naturally and conversationally. Answer exactly what the user asks for without forcing predetermined structures. Always cite document filenames rather than chunk numbers when referencing information."),
+                SystemMessage(content="You are a helpful AI assistant that answers questions about meeting documents naturally and conversationally. Answer exactly what the user asks for without forcing predetermined structures."),
                 HumanMessage(content=answer_prompt)
             ]
             
