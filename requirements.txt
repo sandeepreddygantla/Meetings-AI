@@ -23,4 +23,3 @@ flask-session
 bcrypt
 flask-socketio
 markdown
-wfastcgi

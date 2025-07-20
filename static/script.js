@@ -2527,6 +2527,7 @@ function showUploadModal() {
     const modal = document.getElementById('upload-modal');
     if (modal) {
         loadProjects(); // Load projects when modal is shown
+        loadDocuments(); // Load existing documents for duplicate checking
         modal.classList.add('active');
         document.body.style.overflow = 'hidden';
         
@@ -2580,6 +2581,7 @@ function addFilesToUpload(files) {
     const maxSize = 50 * 1024 * 1024; // 50MB
     let addedCount = 0;
     let errorCount = 0;
+    let duplicateCount = 0;
 
     files.forEach(file => {
         const extension = '.' + file.name.split('.').pop().toLowerCase();
@@ -2602,20 +2604,34 @@ function addFilesToUpload(files) {
             return;
         }
 
-        // Check for duplicates
+        // Check for duplicates in current upload list
         if (uploadedFiles.find(f => f.name === file.name)) {
             showNotification(`${file.name}: File already added`, 'warning');
             return;
         }
 
-        // Add valid file
-        uploadedFiles.push({
-            file: file,
-            name: file.name,
-            size: formatFileSize(file.size),
-            status: 'ready'
-        });
-        addedCount++;
+        // Check for duplicates in existing documents
+        const isDuplicate = checkForExistingDocument(file.name);
+        if (isDuplicate) {
+            // Add file with duplicate warning
+            uploadedFiles.push({
+                file: file,
+                name: file.name,
+                size: formatFileSize(file.size),
+                status: 'duplicate',
+                duplicateInfo: isDuplicate
+            });
+            duplicateCount++;
+        } else {
+            // Add valid file
+            uploadedFiles.push({
+                file: file,
+                name: file.name,
+                size: formatFileSize(file.size),
+                status: 'ready'
+            });
+            addedCount++;
+        }
     });
 
     updateUploadedFilesList();
@@ -2623,6 +2639,10 @@ function addFilesToUpload(files) {
     // Show summary notification
     if (addedCount > 0) {
         showNotification(`✅ Added ${addedCount} file${addedCount > 1 ? 's' : ''} for processing`);
+    }
+    
+    if (duplicateCount > 0) {
+        showNotification(`⚠️ ${duplicateCount} duplicate file${duplicateCount > 1 ? 's' : ''} detected`, 'warning');
     }
     
     if (errorCount > 0) {
@@ -2633,6 +2653,38 @@ function clearUploadedFiles() {
     uploadedFiles = [];
     updateUploadedFilesList();
     showNotification('File list cleared');
+}
+
+// Helper function to check if a file already exists in the system
+function checkForExistingDocument(fileName) {
+    if (!availableDocuments || availableDocuments.length === 0) {
+        return null;
+    }
+    
+    // Normalize filename for comparison (remove extension and spaces, convert to lowercase)
+    const normalizeFileName = (name) => {
+        return name.toLowerCase()
+            .replace(/\.(docx|txt|pdf)$/i, '')
+            .replace(/[\s_-]+/g, ' ')
+            .trim();
+    };
+    
+    const normalizedFileName = normalizeFileName(fileName);
+    
+    // Check for exact or similar matches
+    const duplicate = availableDocuments.find(doc => {
+        const normalizedDocName = normalizeFileName(doc.filename);
+        return normalizedDocName === normalizedFileName;
+    });
+    
+    if (duplicate) {
+        return {
+            originalName: duplicate.filename,
+            uploadDate: duplicate.created_at || 'Unknown date'
+        };
+    }
+    
+    return null;
 }
 
 function updateUploadedFilesList() {
@@ -2649,19 +2701,37 @@ function updateUploadedFilesList() {
     const readyFiles = uploadedFiles.filter(f => f.status === 'ready');
     processBtn.disabled = readyFiles.length === 0;
     
-    container.innerHTML = uploadedFiles.map(fileObj => `
-        <div class="file-item">
-            <div class="file-info">
-                <div class="file-icon">${getFileIcon(fileObj.name)}</div>
-                <div class="file-details">
-                    <div class="file-name">${fileObj.name}</div>
-                    <div class="file-size">${fileObj.size}</div>
-                    ${fileObj.error ? `<div class="file-error" style="color: #FF612B; font-size: 11px; margin-top: 2px;">${fileObj.error}</div>` : ''}
+    container.innerHTML = uploadedFiles.map((fileObj, index) => {
+        let statusContent = '';
+        let duplicateMessage = '';
+        
+        if (fileObj.status === 'duplicate') {
+            duplicateMessage = `<div class="file-duplicate-warning" style="color: #ff8c00; font-size: 11px; margin-top: 2px;">⚠️ This file has already been uploaded: ${fileObj.duplicateInfo.originalName}</div>`;
+            statusContent = `
+                <div class="file-status duplicate-status" style="display: flex; align-items: center; gap: 8px;">
+                    <span style="color: #ff8c00;">⚠️ Duplicate</span>
+                    <button onclick="removeUploadedFile(${index})" class="remove-file-btn" style="background: #ff6b6b; color: white; border: none; border-radius: 4px; padding: 2px 6px; font-size: 10px; cursor: pointer;">Remove</button>
                 </div>
+            `;
+        } else {
+            statusContent = `<div class="file-status ${fileObj.status}">${getStatusText(fileObj.status)}</div>`;
+        }
+        
+        return `
+            <div class="file-item">
+                <div class="file-info">
+                    <div class="file-icon">${getFileIcon(fileObj.name)}</div>
+                    <div class="file-details">
+                        <div class="file-name">${fileObj.name}</div>
+                        <div class="file-size">${fileObj.size}</div>
+                        ${fileObj.error ? `<div class="file-error" style="color: #FF612B; font-size: 11px; margin-top: 2px;">${fileObj.error}</div>` : ''}
+                        ${duplicateMessage}
+                    </div>
+                </div>
+                ${statusContent}
             </div>
-            <div class="file-status ${fileObj.status}">${getStatusText(fileObj.status)}</div>
-        </div>
-    `).join('');
+        `;
+    }).join('');
 }
 
 function getFileIcon(filename) {
@@ -2679,7 +2749,8 @@ function getStatusText(status) {
         'ready': '📋 Ready',
         'processing': '⏳ Processing...',
         'success': '✅ Processed',
-        'error': '❌ Error'
+        'error': '❌ Error',
+        'duplicate': '⚠️ Duplicate'
     };
     return texts[status] || status;
 }
@@ -2692,6 +2763,21 @@ function formatFileSize(bytes) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
+// Helper function to parse server error responses into user-friendly messages
+function parseServerError(result) {
+    if (result.duplicates && result.duplicates.length > 0) {
+        const duplicateNames = result.duplicates.map(d => d.original_filename || d.filename).join(', ');
+        return `These files have already been uploaded: ${duplicateNames}`;
+    }
+    
+    if (result.validation_errors && result.validation_errors.length > 0) {
+        const errorFiles = result.validation_errors.map(e => `${e.filename}: ${e.error}`).join(', ');
+        return `File validation errors: ${errorFiles}`;
+    }
+    
+    return result.error || 'Upload failed';
+}
+
 async function processFiles() {
     if (uploadedFiles.length === 0) return;
 
@@ -2700,13 +2786,28 @@ async function processFiles() {
     processBtn.innerHTML = 'Processing...';
 
     try {
-        // Set all files to processing status
-        uploadedFiles.forEach(fileObj => fileObj.status = 'processing');
+        // Filter out duplicate files and only process ready files
+        const filesToProcess = uploadedFiles.filter(fileObj => fileObj.status === 'ready');
+        const duplicateFiles = uploadedFiles.filter(fileObj => fileObj.status === 'duplicate');
+        
+        if (filesToProcess.length === 0) {
+            showNotification('No valid files to process. Please remove duplicates or add new files.', 'warning');
+            return;
+        }
+        
+        // Show info about skipped duplicates
+        if (duplicateFiles.length > 0) {
+            const duplicateNames = duplicateFiles.map(f => f.name).join(', ');
+            showNotification(`Skipping ${duplicateFiles.length} duplicate file(s): ${duplicateNames}`, 'info');
+        }
+
+        // Set processing files to processing status
+        filesToProcess.forEach(fileObj => fileObj.status = 'processing');
         updateUploadedFilesList();
 
-        // Create FormData for upload
+        // Create FormData for upload with only non-duplicate files
         const formData = new FormData();
-        uploadedFiles.forEach(fileObj => {
+        filesToProcess.forEach(fileObj => {
             formData.append('files', fileObj.file);
         });
         
@@ -2725,10 +2826,10 @@ async function processFiles() {
             const result = await response.json();
             
             if (result.success && result.job_id) {
-                // Show duplicate files warning if any
+                // Show duplicate files warning if any from server
                 if (result.duplicates && result.duplicates.length > 0) {
-                    const duplicateNames = result.duplicates.map(d => d.filename).join(', ');
-                    showNotification(`Duplicate files skipped: ${duplicateNames}`, 'warning');
+                    const duplicateNames = result.duplicates.map(d => d.original_filename || d.filename).join(', ');
+                    showNotification(`Server detected additional duplicates: ${duplicateNames}`, 'warning');
                 }
 
                 // Show validation errors if any
@@ -2744,25 +2845,36 @@ async function processFiles() {
                 await waitForProcessingComplete(result.job_id);
                 
             } else {
-                // Handle immediate failure
-                uploadedFiles.forEach(fileObj => {
+                // Handle immediate failure with better error messages
+                const errorMessage = parseServerError(result);
+                filesToProcess.forEach(fileObj => {
                     fileObj.status = 'error';
-                    fileObj.error = result.error || 'Upload failed';
+                    fileObj.error = errorMessage;
                 });
                 updateUploadedFilesList();
-                showNotification(`Upload failed: ${result.error}`, 'error');
+                showNotification(errorMessage, 'error');
             }
 
         } else {
-            // HTTP error response
+            // HTTP error response with better error parsing
             const errorText = await response.text();
-            throw new Error(`Upload failed with status ${response.status}: ${errorText}`);
+            let errorMessage = 'Upload failed';
+            
+            try {
+                const errorData = JSON.parse(errorText);
+                errorMessage = parseServerError(errorData);
+            } catch {
+                errorMessage = `Upload failed (${response.status})`;
+            }
+            
+            throw new Error(errorMessage);
         }
 
     } catch (error) {
         
-        // Set all files to error status
-        uploadedFiles.forEach(fileObj => {
+        // Set processing files to error status
+        const filesToProcess = uploadedFiles.filter(fileObj => fileObj.status === 'processing');
+        filesToProcess.forEach(fileObj => {
             fileObj.status = 'error';
             fileObj.error = error.message || 'Network error';
         });
