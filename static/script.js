@@ -252,7 +252,7 @@ document.addEventListener('DOMContentLoaded', function() {
     loadFolders();
     
     // Setup @ mention detection
-    // setupAtMentionDetection();  // Temporarily disabled for demo
+    setupAtMentionDetection();  // Re-enabled for proper @ mention functionality
     
 });
 
@@ -1605,14 +1605,14 @@ function parseEnhancedMentionsFromMessage(message) {
     console.log('Parsing message for mentions:', message);
     
     // Parse @ mentions (projects, meetings, dates, files)
-    const atMentionRegex = /@(project|meeting|date|file):([^@\s]+)/g;
+    const atMentionRegex = /@(project|meeting|date|file):([^@?]+?)(?=\s+(?:what|how|when|where|why|who|tell|explain|show|give|list|can|could|would|should|do|did|does|is|are|were|was)|$|@)/gi;
     let match;
     
     while ((match = atMentionRegex.exec(message)) !== null) {
         mentions.push({
             type: match[1],
             prefix: match[1],
-            value: match[2],
+            value: match[2].trim(),
             fullMatch: match[0]
         });
     }
@@ -2236,7 +2236,10 @@ function saveCurrentConversation() {
             const existingConv = savedConversations.find(c => c.id === currentConversationId);
             if (existingConv) {
                 existingConv.history = [...conversationHistory];
-                existingConv.title = title;
+                // Only update title if it hasn't been manually edited (preserve custom titles)
+                if (!existingConv.titleEdited) {
+                    existingConv.title = title;
+                }
                 existingConv.lastUpdated = new Date().toISOString();
             } else {
             }
@@ -3652,6 +3655,7 @@ function confirmEdit() {
     
     const oldTitle = conversation.title;
     conversation.title = newTitle;
+    conversation.titleEdited = true; // Mark as manually edited
     conversation.updatedAt = new Date().toISOString();
     
     // Update UI and save

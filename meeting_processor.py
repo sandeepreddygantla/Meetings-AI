@@ -24,8 +24,19 @@ from dotenv import load_dotenv
 
 # Force reload of environment variables
 load_dotenv(override=True)
+
+# Ensure logs directory exists
+os.makedirs('logs', exist_ok=True)
+
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('logs/meeting_processor.log'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # API key will be checked when llm/embedding_model are used, not at module import
@@ -113,6 +124,17 @@ class DocumentChunk:
     start_char: int
     end_char: int
     embedding: Optional[np.ndarray] = None
+    # Database metadata fields
+    user_id: Optional[str] = None
+    meeting_id: Optional[str] = None
+    project_id: Optional[str] = None
+    date: Optional[datetime] = None
+    document_title: Optional[str] = None
+    content_summary: Optional[str] = None
+    main_topics: Optional[str] = None
+    past_events: Optional[str] = None
+    future_actions: Optional[str] = None
+    participants: Optional[str] = None
     # Enhanced intelligence metadata
     enhanced_content: Optional[str] = None
     chunk_type: Optional[str] = None
@@ -2143,8 +2165,9 @@ class EnhancedMeetingDocumentProcessor:
             separators=["\n\n", "\n", ". ", "? ", "! ", " ", ""]
         )
         
-        # Vector database
-        self.vector_db = VectorDatabase()
+        # Vector database - use new refactored DatabaseManager
+        from src.database.manager import DatabaseManager
+        self.vector_db = DatabaseManager()
         
         logger.info("Enhanced Meeting Document Processor initialized with OpenAI")
     
@@ -3157,6 +3180,8 @@ Return only the date in YYYY-MM-DD format (e.g., 2025-07-14) or "NONE" if no dat
                 search_filters['project_id'] = project_id
             if date_filters:
                 search_filters['date_filters'] = date_filters
+            if folder_path:
+                search_filters['folder_path'] = folder_path
             
             # Perform enhanced search with metadata filtering
             enhanced_results = self.vector_db.enhanced_search_with_metadata(
@@ -3250,24 +3275,54 @@ Return only the date in YYYY-MM-DD format (e.g., 2025-07-14) or "NONE" if no dat
         for result in enhanced_results:
             chunk = result['chunk']
             context = result['context']
-            metadata = result['metadata']
+            # Extract metadata from chunk attributes instead of result['metadata'] which doesn't exist
+            metadata = {
+                'speakers': [],
+                'decisions': [],
+                'actions': []
+            }
+            
+            # Try to extract metadata from chunk attributes if available
+            if hasattr(chunk, 'speakers') and chunk.speakers:
+                try:
+                    import json
+                    metadata['speakers'] = json.loads(chunk.speakers) if isinstance(chunk.speakers, str) else chunk.speakers
+                except:
+                    metadata['speakers'] = []
+            
+            if hasattr(chunk, 'decisions') and chunk.decisions:
+                try:
+                    import json
+                    metadata['decisions'] = json.loads(chunk.decisions) if isinstance(chunk.decisions, str) else chunk.decisions
+                except:
+                    metadata['decisions'] = []
+                    
+            if hasattr(chunk, 'actions') and chunk.actions:
+                try:
+                    import json
+                    metadata['actions'] = json.loads(chunk.actions) if isinstance(chunk.actions, str) else chunk.actions
+                except:
+                    metadata['actions'] = []
             
             # Collect context information
-            context_part = f"**From {context['meeting_context'].get('meeting_title', 'Meeting')} ({context['meeting_context'].get('meeting_date', 'Unknown date')})**\n"
+            document_title = context.get('document_title', chunk.filename)
+            document_date = context.get('document_date', 'Unknown date')
+            
+            context_part = f"**From {document_title} ({document_date})**\n"
             context_part += f"Content: {chunk.enhanced_content or chunk.content}\n"
             
             if metadata['speakers']:
                 context_part += f"Speakers: {', '.join(metadata['speakers'])}\n"
             
             if metadata['decisions']:
-                context_part += f"Decisions: {'; '.join([d.get('decision', '') for d in metadata['decisions'][:2]])}\n"
+                context_part += f"Decisions: {'; '.join([str(d) for d in metadata['decisions'][:2]])}\n"
                 decisions_made.extend(metadata['decisions'])
             
             if metadata['actions']:
-                context_part += f"Actions: {'; '.join([a.get('task', '') for a in metadata['actions'][:2]])}\n"
+                context_part += f"Actions: {'; '.join([str(a) for a in metadata['actions'][:2]])}\n"
                 actions_identified.extend(metadata['actions'])
             
-            context_part += f"Relevance Score: {result['relevance_score']:.3f}\n\n"
+            context_part += f"Relevance Score: {result['similarity_score']:.3f}\n\n"
             context_parts.append(context_part)
             
             # Collect speaker data
@@ -3276,13 +3331,19 @@ Return only the date in YYYY-MM-DD format (e.g., 2025-07-14) or "NONE" if no dat
                     speaker_contributions[speaker] = []
                 speaker_contributions[speaker].append({
                     'content': chunk.content[:200] + "..." if len(chunk.content) > 200 else chunk.content,
-                    'meeting': context['meeting_context'].get('meeting_title', 'Unknown'),
-                    'date': context['meeting_context'].get('meeting_date', 'Unknown')
+                    'meeting': document_title,
+                    'date': document_date
                 })
             
             # Collect meeting context
-            meeting_context = context['meeting_context']
-            if meeting_context and meeting_context not in meeting_contexts:
+            meeting_context = {
+                'meeting_title': document_title,
+                'meeting_date': document_date,
+                'participants': context.get('participants', ''),
+                'main_topics': context.get('main_topics', ''),
+                'document_summary': context.get('document_summary', '')
+            }
+            if meeting_context not in meeting_contexts:
                 meeting_contexts.append(meeting_context)
         
         # Create comprehensive context string
@@ -3622,9 +3683,27 @@ Return exactly 4-5 questions, each on a new line, without numbers or bullet poin
             if total_docs == 0:
                 return {"error": "No documents processed"}
             
-            # Get date range
-            cursor.execute("SELECT MIN(date), MAX(date) FROM documents")
-            date_range = cursor.fetchone()
+            # Get date range from actual meeting dates in filenames
+            cursor.execute("SELECT filename FROM documents")
+            filenames = cursor.fetchall()
+            
+            meeting_dates = []
+            for (filename,) in filenames:
+                # Extract date from filename format: Document_Fulfillment_AIML-20250714_153021-Meeting_Recording.docx
+                date_match = re.search(r'-(\d{8})_', filename)
+                if date_match:
+                    date_str = date_match.group(1)  # e.g., "20250714"
+                    # Convert to readable format: YYYY-MM-DD
+                    formatted_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+                    meeting_dates.append(formatted_date)
+            
+            if meeting_dates:
+                meeting_dates.sort()
+                date_range = (meeting_dates[0], meeting_dates[-1])
+            else:
+                # Fallback to processing dates if no meeting dates found
+                cursor.execute("SELECT MIN(date), MAX(date) FROM documents")
+                date_range = cursor.fetchone()
             
             # Get chunk statistics
             cursor.execute("SELECT COUNT(*), AVG(LENGTH(content)) FROM chunks")
