@@ -104,65 +104,52 @@ def get_access_token():
         return None
 
 # --- OpenAI LLM Client ---
-# Pre-initialized instances to avoid inline instantiation (following instructions.md)
-_llm_instance = None
-_embedding_instance = None
 
-def _create_llm_instance():
-    """Create LLM instance once (internal function)"""
+# --- OpenAI LLM Client ---
+def get_llm(access_token: str = None):
+    """
+    Get OpenAI LLM client. access_token parameter is kept for compatibility
+    but not used since OpenAI uses API key authentication.
+    """
     try:
+        # Get fresh API key each time to avoid caching issues
         current_api_key = os.getenv("OPENAI_API_KEY")
         if not current_api_key:
             logger.warning("OPENAI_API_KEY environment variable not set")
             return None
         
         return ChatOpenAI(
-            model="gpt-4o",
+            model="gpt-4o",  # Using GPT-4o model
             openai_api_key=current_api_key,
             temperature=0,
-            max_tokens=4000,
+            max_tokens=4000,  # Adjust as needed
             request_timeout=60
         )
     except Exception as e:
         logger.error(f"Error creating LLM client: {e}")
         return None
 
-def get_llm(access_token: str = None):
+# --- OpenAI Embedding Model ---
+def get_embedding_model(access_token: str = None):
     """
-    Get OpenAI LLM client. Returns pre-initialized instance following instructions.md.
-    access_token parameter is kept for compatibility.
+    Get OpenAI embedding model. access_token parameter is kept for compatibility
+    but not used since OpenAI uses API key authentication.
     """
-    global _llm_instance
-    if _llm_instance is None:
-        _llm_instance = _create_llm_instance()
-    return _llm_instance
-
-def _create_embedding_instance():
-    """Create embedding instance once (internal function)"""
     try:
+        # Get fresh API key each time to avoid caching issues
         current_api_key = os.getenv("OPENAI_API_KEY")
         if not current_api_key:
             logger.warning("OPENAI_API_KEY environment variable not set")
             return None
         
         return OpenAIEmbeddings(
-            model="text-embedding-3-large",
+            model="text-embedding-3-large",  # Using text-embedding-3-large
             openai_api_key=current_api_key,
-            dimensions=3072
+            dimensions=3072  # text-embedding-3-large dimension
         )
     except Exception as e:
         logger.error(f"Error creating embedding model: {e}")
         return None
-
-def get_embedding_model(access_token: str = None):
-    """
-    Get OpenAI embedding model. Returns pre-initialized instance following instructions.md.
-    access_token parameter is kept for compatibility.
-    """
-    global _embedding_instance
-    if _embedding_instance is None:
-        _embedding_instance = _create_embedding_instance()
-    return _embedding_instance
 
 # Initialize global variables (keeping same structure)
 # These will be None if API keys are not available, but won't crash the module load
@@ -2253,52 +2240,35 @@ class EnhancedMeetingDocumentProcessor:
             else:
                 return fallback_summary
     def refresh_clients(self):
-        """Refresh AI clients - Handles both Azure (token refresh) and OpenAI (no refresh needed)"""
+        """Refresh OpenAI clients with new API key (if needed)"""
         try:
-            global access_token, llm, embedding_model, _llm_instance, _embedding_instance
-            
-            # Check if we're using Azure (needs token refresh) or OpenAI (no refresh needed)
-            azure_client_id = os.getenv("AZURE_CLIENT_ID")
-            
-            if azure_client_id:
-                # Azure environment - refresh tokens
-                if hasattr(self, 'token_expiry') and datetime.now() >= self.token_expiry - timedelta(minutes=5):
-                    logger.info("Azure token expiring - refreshing...")
-                    access_token = get_access_token()
-                    self.access_token = access_token
-                    self.token_expiry = datetime.now() + timedelta(hours=1)
+            global access_token, llm, embedding_model
 
-                    # Force recreation of instances with new token
-                    _llm_instance = None
-                    _embedding_instance = None
-                    
-                    # Update references to use refreshed instances
-                    self.llm = get_llm(access_token)
-                    self.embedding_model = get_embedding_model(access_token)
-                else:
-                    # Force refresh Azure token
-                    logger.info("Force refreshing Azure token...")
-                    access_token = get_access_token()
-                    self.access_token = access_token
-                    self.token_expiry = datetime.now() + timedelta(hours=1)
+            if hasattr(self, 'token_expiry') and datetime.now() >= self.token_expiry - timedelta(minutes=5):
+                logger.info("Refreshing access token...")
+                access_token = get_access_token()
+                self.access_token = access_token
+                self.token_expiry = datetime.now() + timedelta(hours=1)
 
-                    # Force recreation of instances with new token
-                    _llm_instance = None
-                    _embedding_instance = None
-                    
-                    # Update references to use refreshed instances
-                    self.llm = get_llm(access_token)
-                    self.embedding_model = get_embedding_model(access_token)
+                llm = get_llm(access_token)
+                embedding_model = get_embedding_model(access_token)
+                self.llm = llm
+                self.embedding_model = embedding_model
             else:
-                # OpenAI environment - no token refresh needed
-                logger.info("OpenAI environment - no token refresh required")
-                # Just ensure we have the current instances
-                self.llm = get_llm(access_token)
-                self.embedding_model = get_embedding_model(access_token)
+                # Force refresh even if not expired
+                logger.info("Force refreshing access token...")
+                access_token = get_access_token()
+                self.access_token = access_token
+                self.token_expiry = datetime.now() + timedelta(hours=1)
 
-            logger.info("AI clients refreshed successfully")
+                llm = get_llm(access_token)
+                embedding_model = get_embedding_model(access_token)
+                self.llm = llm
+                self.embedding_model = embedding_model
+
+            logger.info("OpenAI clients refreshed successfully")
         except Exception as e:
-            logger.error(f"Failed to refresh AI clients: {e}")
+            logger.error(f"Failed to refresh OpenAI clients: {e}")
             raise
     
     def extract_date_from_filename(self, filename: str, content: str = None) -> datetime:
