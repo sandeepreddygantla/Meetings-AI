@@ -238,46 +238,56 @@ class DatabaseManager:
                 target_project_id = None
                 target_project_name = filter_folder_path
                 
-                if 'project_' in filter_folder_path:
+                # Special case: "project_default" means include all chunks (no project filtering)
+                if 'project_default' in filter_folder_path:
+                    logger.info(f"Folder path contains 'project_default' - skipping project filtering")
+                    # Skip this entire folder filtering block
+                elif 'project_' in filter_folder_path:
                     # Extract project_id from synthetic folder path like "user_folder/project_0457768f-2769-405b-9f94-bad765055754"
                     parts = filter_folder_path.split('project_')
                     if len(parts) > 1:
                         target_project_id = parts[1]
                         logger.info(f"Extracted project_id from folder_path: {target_project_id}")
                 
-                # For folder filtering, match against project name or project_id
-                # First try to match by actual folder_path if available
-                chunk_folder_path = getattr(chunk, 'folder_path', None)
-                if chunk_folder_path and chunk_folder_path == filter_folder_path:
-                    # Direct folder_path match
-                    logger.info(f"Including chunk {chunk.chunk_id} - direct folder_path match: {chunk_folder_path}")
-                else:
-                    # Try matching by project_id or project name
-                    chunk_project_id = getattr(chunk, 'project_id', None)
-                    if chunk_project_id:
-                        # If we have a target project_id from synthetic path, match against it
-                        if target_project_id and chunk_project_id == target_project_id:
-                            logger.info(f"Including chunk {chunk.chunk_id} - project_id match: {chunk_project_id}")
-                        else:
-                            # Otherwise try matching by project name
-                            try:
-                                project_info = self.sqlite_ops.get_project_by_id(chunk_project_id)
-                                if project_info:
-                                    project_name = project_info.project_name
-                                    if project_name == target_project_name:
-                                        logger.info(f"Including chunk {chunk.chunk_id} - project name match: {project_name}")
-                                    else:
-                                        logger.info(f"Filtering out chunk {chunk.chunk_id} - project name mismatch for folder filtering: {project_name} != {target_project_name}")
-                                        continue
-                                else:
-                                    logger.info(f"Filtering out chunk {chunk.chunk_id} - no project found for project_id: {chunk_project_id}")
-                                    continue
-                            except Exception as e:
-                                logger.error(f"Error getting project info for folder filtering: {e}")
-                                continue
+                    # For folder filtering, match against project name or project_id
+                    # First try to match by actual folder_path if available
+                    chunk_folder_path = getattr(chunk, 'folder_path', None)
+                    if chunk_folder_path and chunk_folder_path == filter_folder_path:
+                        # Direct folder_path match
+                        logger.info(f"Including chunk {chunk.chunk_id} - direct folder_path match: {chunk_folder_path}")
                     else:
-                        logger.info(f"Filtering out chunk {chunk.chunk_id} - no project_id or folder_path for folder filtering")
-                        continue
+                        # Try matching by project_id or project name
+                        chunk_project_id = getattr(chunk, 'project_id', None)
+                        if chunk_project_id:
+                            # If we have a target project_id from synthetic path, match against it
+                            if target_project_id and chunk_project_id == target_project_id:
+                                logger.info(f"Including chunk {chunk.chunk_id} - project_id match: {chunk_project_id}")
+                            else:
+                                # Otherwise try matching by project name
+                                try:
+                                    project_info = self.sqlite_ops.get_project_by_id(chunk_project_id)
+                                    if project_info:
+                                        project_name = project_info.project_name
+                                        if project_name == target_project_name:
+                                            logger.info(f"Including chunk {chunk.chunk_id} - project name match: {project_name}")
+                                        else:
+                                            logger.info(f"Filtering out chunk {chunk.chunk_id} - project name mismatch for folder filtering: {project_name} != {target_project_name}")
+                                            continue
+                                    else:
+                                        logger.info(f"Filtering out chunk {chunk.chunk_id} - no project found for project_id: {chunk_project_id}")
+                                        continue
+                                except Exception as e:
+                                    logger.error(f"Error getting project info for folder filtering: {e}")
+                                    continue
+                        else:
+                            # If no project matching is possible, include the chunk anyway for now
+                            # This prevents overly strict filtering that removes all results
+                            logger.info(f"Including chunk {chunk.chunk_id} - relaxed folder filtering (no project info available)")
+                            # Continue processing instead of filtering out
+                            pass
+                else:
+                    # No folder filtering when folder_path doesn't contain project info
+                    logger.info(f"Folder path '{filter_folder_path}' - no project filtering applied")
             
             logger.info(f"Including chunk {chunk.chunk_id} in results")
             filtered_results.append(result)

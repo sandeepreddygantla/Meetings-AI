@@ -84,8 +84,17 @@ def initialize_services():
         logger.info("Initializing services...")
         
         # Initialize AI clients (following instructions.md)
-        if not initialize_ai_clients():
-            logger.error("Failed to initialize AI clients")
+        # Check if already initialized in meeting_processor global scope
+        try:
+            from meeting_processor import access_token, embedding_model, llm
+            if access_token and embedding_model and llm:
+                logger.info("AI clients already initialized in meeting_processor")
+            else:
+                if not initialize_ai_clients():
+                    logger.error("Failed to initialize AI clients")
+                    # Continue anyway - some functionality may be limited
+        except ImportError:
+            logger.error("Could not import AI clients from meeting_processor")
             # Continue anyway - some functionality may be limited
         
         # Initialize database manager
@@ -95,9 +104,12 @@ def initialize_services():
         # Initialize processor for backwards compatibility - share database manager
         if EnhancedMeetingDocumentProcessor:
             try:
-                processor = EnhancedMeetingDocumentProcessor(chunk_size=1000, chunk_overlap=200)
-                # CRITICAL FIX: Share the same database manager instead of creating a new one
-                processor.vector_db = db_manager
+                # Pass database manager directly to avoid creating duplicate instances
+                processor = EnhancedMeetingDocumentProcessor(
+                    chunk_size=1000, 
+                    chunk_overlap=200, 
+                    db_manager=db_manager
+                )
                 logger.info("Processor initialized with shared database manager")
             except Exception as e:
                 logger.error(f"Failed to initialize processor: {e}")

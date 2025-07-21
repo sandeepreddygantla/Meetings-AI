@@ -7,8 +7,8 @@ import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 import re
 from pathlib import Path
-# Remove Azure imports and replace with OpenAI
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+# Support both OpenAI and Azure OpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings, AzureChatOpenAI, AzureOpenAIEmbeddings
 from langchain.schema import HumanMessage, SystemMessage
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import logging
@@ -18,6 +18,23 @@ from collections import defaultdict
 import threading
 import time
 import hashlib
+import httpx
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Configure tiktoken cache
+tiktoken_cache_dir = os.path.abspath("tiktoken_cache")
+os.environ["TIKTOKEN_CACHE_DIR"] = tiktoken_cache_dir
+
+# Verify tiktoken cache exists (optional check)
+if os.path.exists(tiktoken_cache_dir):
+    expected_file = os.path.join(tiktoken_cache_dir, "9b5ad71b2ce5302211f9c61530b329a4922fc6a4")
+    if not os.path.exists(expected_file):
+        logging.warning("Tokenizer file missing in 'tiktoken_cache' directory - performance may be affected")
+else:
+    logging.warning("Tiktoken cache directory not found - will be created automatically on first use")
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
@@ -49,56 +66,103 @@ os.environ["TIKTOKEN_CACHE_DIR"] = tiktoken_cache_dir
 # --- Dummy Auth Function (for compatibility) ---
 def get_access_token():
     """
-    Dummy function to maintain compatibility with existing code.
-    OpenAI API uses API key authentication, not tokens.
-    """
-    return "dummy_token_for_compatibility"
-
-# --- OpenAI LLM Client ---
-def get_llm(access_token: str = None):
-    """
-    Get OpenAI LLM client. access_token parameter is kept for compatibility
-    but not used since OpenAI uses API key authentication.
+    Get access token. Automatically detects environment and returns appropriate token.
+    For OpenAI: Returns None (uses API key)
+    For Azure: Returns Azure AD token
     """
     try:
-        # Get fresh API key each time to avoid caching issues
+        # Check if Azure environment variables are set
+        azure_client_id = os.getenv("AZURE_CLIENT_ID")
+        azure_client_secret = os.getenv("AZURE_CLIENT_SECRET")
+        
+        if azure_client_id and azure_client_secret:
+            # Azure environment detected
+            logger.info("Azure environment detected - getting Azure AD token")
+            auth = "https://api.uhg.com/oauth2/token"
+            scope = "https://api.uhg.com/.default"
+            grant_type = "client_credentials"
+            
+            with httpx.Client() as client:
+                body = {
+                    "grant_type": grant_type,
+                    "scope": scope,
+                    "client_id": azure_client_id,
+                    "client_secret": azure_client_secret
+                }
+                headers = {"Content-Type": "application/x-www-form-urlencoded"}
+                response = client.post(auth, headers=headers, data=body, timeout=60)
+                response.raise_for_status()
+                return response.json()["access_token"]
+        else:
+            # OpenAI environment - no token needed
+            logger.info("OpenAI environment detected - using API key authentication")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error getting access token: {e}")
+        # Fallback to OpenAI mode
+        return None
+
+# --- OpenAI LLM Client ---
+# Pre-initialized instances to avoid inline instantiation (following instructions.md)
+_llm_instance = None
+_embedding_instance = None
+
+def _create_llm_instance():
+    """Create LLM instance once (internal function)"""
+    try:
         current_api_key = os.getenv("OPENAI_API_KEY")
         if not current_api_key:
             logger.warning("OPENAI_API_KEY environment variable not set")
             return None
         
         return ChatOpenAI(
-            model="gpt-4o",  # Using GPT-4o model
+            model="gpt-4o",
             openai_api_key=current_api_key,
             temperature=0,
-            max_tokens=4000,  # Adjust as needed
+            max_tokens=4000,
             request_timeout=60
         )
     except Exception as e:
         logger.error(f"Error creating LLM client: {e}")
         return None
 
-# --- OpenAI Embedding Model ---
-def get_embedding_model(access_token: str = None):
+def get_llm(access_token: str = None):
     """
-    Get OpenAI embedding model. access_token parameter is kept for compatibility
-    but not used since OpenAI uses API key authentication.
+    Get OpenAI LLM client. Returns pre-initialized instance following instructions.md.
+    access_token parameter is kept for compatibility.
     """
+    global _llm_instance
+    if _llm_instance is None:
+        _llm_instance = _create_llm_instance()
+    return _llm_instance
+
+def _create_embedding_instance():
+    """Create embedding instance once (internal function)"""
     try:
-        # Get fresh API key each time to avoid caching issues
         current_api_key = os.getenv("OPENAI_API_KEY")
         if not current_api_key:
             logger.warning("OPENAI_API_KEY environment variable not set")
             return None
         
         return OpenAIEmbeddings(
-            model="text-embedding-3-large",  # Using text-embedding-3-large
+            model="text-embedding-3-large",
             openai_api_key=current_api_key,
-            dimensions=3072  # text-embedding-3-large dimension
+            dimensions=3072
         )
     except Exception as e:
         logger.error(f"Error creating embedding model: {e}")
         return None
+
+def get_embedding_model(access_token: str = None):
+    """
+    Get OpenAI embedding model. Returns pre-initialized instance following instructions.md.
+    access_token parameter is kept for compatibility.
+    """
+    global _embedding_instance
+    if _embedding_instance is None:
+        _embedding_instance = _create_embedding_instance()
+    return _embedding_instance
 
 # Initialize global variables (keeping same structure)
 # These will be None if API keys are not available, but won't crash the module load
@@ -1304,48 +1368,8 @@ class VectorDatabase:
         return chunk_ids
     
     def get_all_documents(self, user_id: str = None) -> List[Dict[str, Any]]:
-        """Get all documents with metadata for document selection"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        if user_id:
-            cursor.execute('''
-                SELECT d.document_id, d.filename, d.date, d.title, d.content_summary, d.file_size, d.chunk_count,
-                       d.user_id, d.meeting_id, d.project_id, d.folder_path, p.project_name
-                FROM documents d
-                LEFT JOIN projects p ON d.project_id = p.project_id
-                WHERE d.user_id = ?
-                ORDER BY d.date DESC
-            ''', (user_id,))
-        else:
-            cursor.execute('''
-                SELECT d.document_id, d.filename, d.date, d.title, d.content_summary, d.file_size, d.chunk_count,
-                       d.user_id, d.meeting_id, d.project_id, d.folder_path, p.project_name
-                FROM documents d
-                LEFT JOIN projects p ON d.project_id = p.project_id
-                ORDER BY d.date DESC
-            ''')
-        
-        documents = []
-        for row in cursor.fetchall():
-            doc = {
-                'document_id': row[0],
-                'filename': row[1],
-                'date': row[2],
-                'title': row[3],
-                'content_summary': row[4],
-                'file_size': row[5],
-                'chunk_count': row[6],
-                'user_id': row[7],
-                'meeting_id': row[8],
-                'project_id': row[9],
-                'folder_path': row[10],
-                'project_name': row[11]
-            }
-            documents.append(doc)
-        
-        conn.close()
-        return documents
+        """Get all documents with metadata for document selection - DEPRECATED: Use DatabaseManager.get_all_documents instead"""
+        return self.vector_db.get_all_documents(user_id)
     
     def get_user_documents_by_scope(self, user_id: str, project_id: str = None, meeting_id: Union[str, List[str]] = None) -> List[str]:
         """Get document IDs for a user filtered by project or meeting(s)"""
@@ -1492,82 +1516,16 @@ class VectorDatabase:
     
     # User Management Methods
     def create_user(self, username: str, email: str, full_name: str, password_hash: str) -> str:
-        """Create a new user"""
-        user_id = f"user_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{username}"
-        
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute('''
-                INSERT INTO users (user_id, username, email, full_name, password_hash)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (user_id, username, email, full_name, password_hash))
-            
-            conn.commit()
-            logger.info(f"Created user: {username} ({user_id})")
-            return user_id
-            
-        except sqlite3.IntegrityError as e:
-            logger.error(f"Error creating user {username}: {e}")
-            conn.rollback()
-            raise ValueError(f"Username or email already exists")
-        finally:
-            conn.close()
+        """Create a new user - DEPRECATED: Use DatabaseManager.create_user instead"""
+        return self.vector_db.create_user(username, email, full_name, password_hash)
     
     def get_user_by_username(self, username: str) -> Optional[User]:
-        """Get user by username"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT user_id, username, email, full_name, password_hash, created_at, last_login, is_active, role
-            FROM users WHERE username = ? AND is_active = TRUE
-        ''', (username,))
-        
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            return User(
-                user_id=row[0],
-                username=row[1],
-                email=row[2],
-                full_name=row[3],
-                password_hash=row[4],
-                created_at=datetime.fromisoformat(row[5]),
-                last_login=datetime.fromisoformat(row[6]) if row[6] else None,
-                is_active=bool(row[7]),
-                role=row[8]
-            )
-        return None
+        """Get user by username - DEPRECATED: Use DatabaseManager.get_user_by_username instead"""
+        return self.vector_db.get_user_by_username(username)
     
     def get_user_by_id(self, user_id: str) -> Optional[User]:
-        """Get user by user_id"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT user_id, username, email, full_name, password_hash, created_at, last_login, is_active, role
-            FROM users WHERE user_id = ? AND is_active = TRUE
-        ''', (user_id,))
-        
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            return User(
-                user_id=row[0],
-                username=row[1],
-                email=row[2],
-                full_name=row[3],
-                password_hash=row[4],
-                created_at=datetime.fromisoformat(row[5]),
-                last_login=datetime.fromisoformat(row[6]) if row[6] else None,
-                is_active=bool(row[7]),
-                role=row[8]
-            )
-        return None
+        """Get user by user_id - DEPRECATED: Use DatabaseManager.get_user_by_id instead"""
+        return self.vector_db.get_user_by_id(user_id)
     
     def update_user_last_login(self, user_id: str):
         """Update user's last login timestamp"""
@@ -1583,8 +1541,9 @@ class VectorDatabase:
     
     # Project Management Methods
     def create_project(self, user_id: str, project_name: str, description: str = "") -> str:
-        """Create a new project for a user"""
-        project_id = f"proj_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{user_id.split('_')[-1]}"
+        """Create a new project for a user - DEPRECATED: Use DatabaseManager.create_project instead"""
+        import uuid
+        project_id = str(uuid.uuid4())
         
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -1607,7 +1566,8 @@ class VectorDatabase:
             conn.close()
     
     def get_user_projects(self, user_id: str) -> List[Project]:
-        """Get all projects for a user"""
+        """Get all projects for a user - DEPRECATED: Use DatabaseManager.get_user_projects instead"""
+        return self.vector_db.get_user_projects(user_id)
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -1634,7 +1594,8 @@ class VectorDatabase:
     
     # Meeting Management Methods
     def create_meeting(self, user_id: str, project_id: str, meeting_name: str, meeting_date: datetime) -> str:
-        """Create a new meeting"""
+        """Create a new meeting - DEPRECATED: Use DatabaseManager.create_meeting instead"""
+        return self.vector_db.create_meeting(user_id, project_id, meeting_name, meeting_date)
         meeting_id = f"meet_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{user_id.split('_')[-1]}"
         
         conn = sqlite3.connect(self.db_path)
@@ -1690,43 +1651,6 @@ class VectorDatabase:
         conn.close()
         return meetings
     
-    def get_all_documents(self, user_id: str) -> List[Dict[str, Any]]:
-        """Get all documents for a user"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT document_id, filename, date, title, content_summary, 
-                   main_topics, past_events, future_actions, participants,
-                   chunk_count, file_size, user_id, meeting_id, project_id, folder_path
-            FROM documents 
-            WHERE user_id = ?
-            ORDER BY date DESC
-        ''', (user_id,))
-        
-        documents = []
-        for row in cursor.fetchall():
-            doc_dict = {
-                'document_id': row[0],
-                'filename': row[1],
-                'date': row[2],
-                'title': row[3],
-                'content_summary': row[4],
-                'main_topics': json.loads(row[5] or '[]'),
-                'past_events': json.loads(row[6] or '[]'),
-                'future_actions': json.loads(row[7] or '[]'),
-                'participants': json.loads(row[8] or '[]'),
-                'chunk_count': row[9],
-                'file_size': row[10],
-                'user_id': row[11],
-                'meeting_id': row[12],
-                'project_id': row[13],
-                'folder_path': row[14]
-            }
-            documents.append(doc_dict)
-        
-        conn.close()
-        return documents
     
     def get_project_documents(self, project_id: str, user_id: str) -> List[Dict[str, Any]]:
         """Get all documents for a specific project"""
@@ -2149,8 +2073,14 @@ class VectorDatabase:
 class EnhancedMeetingDocumentProcessor:
     """Enhanced Meeting Document Processor with Vector Database Support"""
     
-    def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 200):
-        """Initialize the enhanced processor"""
+    def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 200, db_manager=None):
+        """Initialize the enhanced processor
+        
+        Args:
+            chunk_size: Size of text chunks for processing
+            chunk_overlap: Overlap between chunks  
+            db_manager: External database manager instance (if None, creates new one)
+        """
         global llm, embedding_model, access_token
         self.llm = llm
         self.embedding_model = embedding_model
@@ -2165,9 +2095,14 @@ class EnhancedMeetingDocumentProcessor:
             separators=["\n\n", "\n", ". ", "? ", "! ", " ", ""]
         )
         
-        # Vector database - use new refactored DatabaseManager
-        from src.database.manager import DatabaseManager
-        self.vector_db = DatabaseManager()
+        # Vector database - use provided manager or create new one
+        if db_manager is not None:
+            self.vector_db = db_manager
+            logger.info("Using provided database manager")
+        else:
+            from src.database.manager import DatabaseManager
+            self.vector_db = DatabaseManager()
+            logger.info("Created new database manager")
         
         logger.info("Enhanced Meeting Document Processor initialized with OpenAI")
     
@@ -2318,35 +2253,52 @@ class EnhancedMeetingDocumentProcessor:
             else:
                 return fallback_summary
     def refresh_clients(self):
-        """Refresh Azure clients with new access token"""
+        """Refresh AI clients - Handles both Azure (token refresh) and OpenAI (no refresh needed)"""
         try:
-            global access_token, llm, embedding_model
+            global access_token, llm, embedding_model, _llm_instance, _embedding_instance
+            
+            # Check if we're using Azure (needs token refresh) or OpenAI (no refresh needed)
+            azure_client_id = os.getenv("AZURE_CLIENT_ID")
+            
+            if azure_client_id:
+                # Azure environment - refresh tokens
+                if hasattr(self, 'token_expiry') and datetime.now() >= self.token_expiry - timedelta(minutes=5):
+                    logger.info("Azure token expiring - refreshing...")
+                    access_token = get_access_token()
+                    self.access_token = access_token
+                    self.token_expiry = datetime.now() + timedelta(hours=1)
 
-            if hasattr(self, 'token_expiry') and datetime.now() >= self.token_expiry - timedelta(minutes=5):
-                logger.info("Refreshing access token...")
-                access_token = get_access_token()
-                self.access_token = access_token
-                self.token_expiry = datetime.now() + timedelta(hours=1)
+                    # Force recreation of instances with new token
+                    _llm_instance = None
+                    _embedding_instance = None
+                    
+                    # Update references to use refreshed instances
+                    self.llm = get_llm(access_token)
+                    self.embedding_model = get_embedding_model(access_token)
+                else:
+                    # Force refresh Azure token
+                    logger.info("Force refreshing Azure token...")
+                    access_token = get_access_token()
+                    self.access_token = access_token
+                    self.token_expiry = datetime.now() + timedelta(hours=1)
 
-                llm = get_llm(access_token)
-                embedding_model = get_embedding_model(access_token)
-                self.llm = llm
-                self.embedding_model = embedding_model
+                    # Force recreation of instances with new token
+                    _llm_instance = None
+                    _embedding_instance = None
+                    
+                    # Update references to use refreshed instances
+                    self.llm = get_llm(access_token)
+                    self.embedding_model = get_embedding_model(access_token)
             else:
-                # Force refresh even if not expired
-                logger.info("Force refreshing access token...")
-                access_token = get_access_token()
-                self.access_token = access_token
-                self.token_expiry = datetime.now() + timedelta(hours=1)
+                # OpenAI environment - no token refresh needed
+                logger.info("OpenAI environment - no token refresh required")
+                # Just ensure we have the current instances
+                self.llm = get_llm(access_token)
+                self.embedding_model = get_embedding_model(access_token)
 
-                llm = get_llm(access_token)
-                embedding_model = get_embedding_model(access_token)
-                self.llm = llm
-                self.embedding_model = embedding_model
-
-            logger.info("Azure clients refreshed successfully")
+            logger.info("AI clients refreshed successfully")
         except Exception as e:
-            logger.error(f"Failed to refresh Azure clients: {e}")
+            logger.error(f"Failed to refresh AI clients: {e}")
             raise
     
     def extract_date_from_filename(self, filename: str, content: str = None) -> datetime:
@@ -3204,11 +3156,24 @@ Return only the date in YYYY-MM-DD format (e.g., 2025-07-14) or "NONE" if no dat
                             score_map = {chunk_id: score for chunk_id, score in basic_results}
                             enhanced_format = []
                             for chunk in chunks:
-                                enhanced_format.append({
-                                    'chunk': chunk,
-                                    'similarity_score': score_map.get(chunk.chunk_id, 0.0),
-                                    'context': ''
-                                })
+                                # Handle case where chunk might be a string or dict instead of object
+                                if isinstance(chunk, str):
+                                    logger.error(f"Unexpected string chunk in fallback: {chunk}")
+                                    continue
+                                elif isinstance(chunk, dict):
+                                    chunk_id = chunk.get('chunk_id', '')
+                                    enhanced_format.append({
+                                        'chunk': chunk,
+                                        'similarity_score': score_map.get(chunk_id, 0.0),
+                                        'context': ''
+                                    })
+                                else:
+                                    # Assume it's a proper chunk object
+                                    enhanced_format.append({
+                                        'chunk': chunk,
+                                        'similarity_score': score_map.get(chunk.chunk_id, 0.0),
+                                        'context': ''
+                                    })
                             logger.info(f"Converted {len(enhanced_format)} chunks to enhanced format for fallback")
                             response, context = self._generate_intelligence_response(query, enhanced_format, user_id)
                             return (response, context) if include_context else response

@@ -39,3 +39,5 @@ open-localhost.ps1
 open-localhost.cmd
 live-tester.js
 live-test-report.json
+ENVIRONMENT_SETUP.md
+.env.example
