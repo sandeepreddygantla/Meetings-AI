@@ -44,7 +44,10 @@ class VectorOperations:
                 self.index = faiss.IndexFlatIP(self.dimension)
         else:
             self.index = faiss.IndexFlatIP(self.dimension)
-            logger.info("Created new FAISS index")
+            logger.info("Created new empty FAISS index")
+            
+            # Try to rebuild from existing database data if available
+            self._attempt_rebuild_from_database()
     
     def rebuild_chunk_metadata(self, db_path: str):
         """
@@ -74,9 +77,85 @@ class VectorOperations:
             
             logger.info(f"Rebuilt chunk metadata mapping with {len(self.chunk_metadata)} entries")
             
+            # Validate consistency between FAISS index and metadata
+            if self.index and self.index.ntotal != len(self.chunk_metadata):
+                logger.error(f"Vector index size ({self.index.ntotal}) doesn't match metadata entries ({len(self.chunk_metadata)})")
+                logger.error("This indicates the FAISS index and database are out of sync")
+                logger.error("Please delete vector_index.faiss and restart to rebuild from database")
+            
         except Exception as e:
             logger.error(f"Error rebuilding chunk metadata: {e}")
             self.chunk_metadata = {}
+    
+    def _attempt_rebuild_from_database(self):
+        """
+        Attempt to rebuild FAISS index from existing database chunks
+        This is called when vector_index.faiss is missing but database has data
+        """
+        try:
+            # We need to import here to avoid circular imports
+            from meeting_processor import embedding_model
+            
+            if embedding_model is None:
+                logger.warning("Embedding model not available for index rebuild")
+                return
+            
+            # Connect to database and get all chunks
+            db_path = "meeting_documents.db"  # Default database path
+            if not os.path.exists(db_path):
+                logger.info("No database found to rebuild from")
+                return
+                
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Get all chunks ordered by document and chunk index
+            cursor.execute('''
+                SELECT chunk_id, content
+                FROM chunks 
+                ORDER BY document_id, chunk_index
+            ''')
+            
+            chunks_data = cursor.fetchall()
+            conn.close()
+            
+            if not chunks_data:
+                logger.info("No chunks found in database to rebuild index from")
+                return
+                
+            logger.info(f"Found {len(chunks_data)} chunks in database. Starting FAISS index rebuild...")
+            
+            # Generate embeddings for all chunks in batches
+            chunk_ids = []
+            vectors = []
+            batch_size = 100
+            
+            for i in range(0, len(chunks_data), batch_size):
+                batch = chunks_data[i:i + batch_size]
+                batch_content = [chunk[1] for chunk in batch]
+                batch_ids = [chunk[0] for chunk in batch]
+                
+                # Generate embeddings
+                try:
+                    batch_embeddings = embedding_model.embed_documents(batch_content)
+                    vectors.extend([np.array(emb) for emb in batch_embeddings])
+                    chunk_ids.extend(batch_ids)
+                    logger.info(f"Generated embeddings for batch {i//batch_size + 1}/{(len(chunks_data)-1)//batch_size + 1}")
+                except Exception as e:
+                    logger.error(f"Error generating embeddings for batch: {e}")
+                    continue
+            
+            if vectors:
+                # Add all vectors to FAISS index
+                self.add_vectors(vectors, chunk_ids)
+                logger.info(f"Successfully rebuilt FAISS index with {len(vectors)} vectors from database")
+            else:
+                logger.warning("No vectors generated during rebuild attempt")
+                
+        except Exception as e:
+            logger.error(f"Error rebuilding FAISS index from database: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
     
     def add_vectors(self, vectors: List[np.ndarray], chunk_ids: List[str]):
         """
@@ -102,7 +181,10 @@ class VectorOperations:
             # Add vectors to FAISS index
             self.index.add(vectors_array)
             
-            logger.info(f"Added {len(vectors)} vectors to FAISS index")
+            logger.info(f"Added {len(vectors)} vectors to FAISS index. Total vectors now: {self.index.ntotal}")
+            
+            # Automatically save index after adding vectors
+            self.save_index()
             
         except Exception as e:
             logger.error(f"Error adding vectors to index: {e}")
@@ -136,7 +218,10 @@ class VectorOperations:
                     chunk_id = self.chunk_metadata[idx]
                     similarity = float(similarities[0][i])
                     results.append((chunk_id, similarity))
+                else:
+                    logger.warning(f"FAISS index {idx} not found in chunk_metadata. Available indices: {list(self.chunk_metadata.keys())[:10]}...")
             
+            logger.info(f"Vector search returned {len(results)} results from {len(indices[0])} FAISS matches")
             return results
             
         except Exception as e:
@@ -194,10 +279,23 @@ class VectorOperations:
         """Save FAISS index to disk"""
         try:
             if self.index:
+                logger.info(f"Attempting to save FAISS index to {self.index_path}")
                 faiss.write_index(self.index, self.index_path)
-                logger.info(f"Saved FAISS index with {self.index.ntotal} vectors")
+                logger.info(f"Successfully saved FAISS index with {self.index.ntotal} vectors to {self.index_path}")
+                
+                # Verify file was created
+                import os
+                if os.path.exists(self.index_path):
+                    file_size = os.path.getsize(self.index_path)
+                    logger.info(f"FAISS index file created: {self.index_path} ({file_size} bytes)")
+                else:
+                    logger.error(f"FAISS index file was NOT created: {self.index_path}")
+            else:
+                logger.warning("No FAISS index to save (index is None)")
         except Exception as e:
             logger.error(f"Error saving FAISS index: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             raise
     
     def get_index_stats(self) -> Dict[str, Any]:

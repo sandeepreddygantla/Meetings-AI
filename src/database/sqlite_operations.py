@@ -389,6 +389,8 @@ class SQLiteOperations:
         cursor = conn.cursor()
         
         try:
+            logger.info(f"Looking for {len(chunk_ids)} chunks in database. Sample IDs: {chunk_ids[:3]}...")
+            
             # Get chunks data
             placeholders = ','.join(['?' for _ in chunk_ids])
             cursor.execute(f'''
@@ -403,6 +405,16 @@ class SQLiteOperations:
             ''', chunk_ids)
             
             results = cursor.fetchall()
+            logger.info(f"Database query returned {len(results)} rows for {len(chunk_ids)} chunk IDs")
+            
+            # Debug: Check if any chunks exist at all
+            if len(results) == 0:
+                cursor.execute("SELECT COUNT(*) FROM chunks")
+                total_chunks = cursor.fetchone()[0]
+                cursor.execute("SELECT chunk_id FROM chunks LIMIT 3")
+                sample_chunk_ids = [row[0] for row in cursor.fetchall()]
+                logger.warning(f"No chunks found! Database has {total_chunks} total chunks. Sample chunk IDs: {sample_chunk_ids}")
+            
             conn.close()
             
             # Convert to DocumentChunk objects

@@ -151,7 +151,9 @@ class DatabaseManager:
             
             # Get chunk data from SQLite
             chunk_ids = [chunk_id for chunk_id, _ in vector_results]
+            logger.info(f"Vector search returned chunk IDs: {chunk_ids[:5]}...") # Show first 5 IDs
             chunks = self.get_chunks_by_ids(chunk_ids)
+            logger.info(f"Retrieved {len(chunks)} chunks from database for {len(chunk_ids)} chunk IDs")
             
             # Create results with scores
             enhanced_results = []

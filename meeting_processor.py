@@ -3385,7 +3385,10 @@ Return only the date in YYYY-MM-DD format (e.g., 2025-07-14) or "NONE" if no dat
             ]
             
             response = self.llm.invoke(messages)
-            return response.content.strip(), full_context
+            response_content = response.content.strip()
+            logger.info(f"LLM response generated successfully. Length: {len(response_content)} characters")
+            logger.info(f"Response preview: {response_content[:200]}...")
+            return response_content, full_context
             
         except Exception as e:
             logger.error(f"Error generating intelligence response: {e}")
@@ -3598,7 +3601,10 @@ IMPORTANT: When referencing information from the documents, always cite the docu
             ]
             
             response = self.llm.invoke(messages)
-            return (response.content, context) if include_context else response.content
+            response_content = response.content.strip()
+            logger.info(f"Standard LLM response generated. Length: {len(response_content)} characters")
+            logger.info(f"Response preview: {response_content[:200]}...")
+            return (response_content, context) if include_context else response_content
             
         except Exception as e:
             logger.error(f"Error generating answer: {e}")
