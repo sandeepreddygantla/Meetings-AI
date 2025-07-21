@@ -8,6 +8,7 @@ import sqlite3
 import logging
 import hashlib
 import uuid
+import json
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple, Union
 from pathlib import Path
@@ -33,6 +34,17 @@ class SQLiteOperations:
         """
         self.db_path = db_path
         self._init_database()
+    
+    def _safe_json_loads(self, json_str: str) -> list:
+        """Safely parse JSON string, return empty list if parsing fails"""
+        if not json_str:
+            return []
+        try:
+            result = json.loads(json_str)
+            return result if isinstance(result, list) else []
+        except (json.JSONDecodeError, TypeError):
+            logger.warning(f"Failed to parse JSON: {json_str}, returning empty list")
+            return []
     
     def _init_database(self):
         """Initialize SQLite database for metadata storage"""
@@ -330,8 +342,10 @@ class SQLiteOperations:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 document.document_id, document.filename, document.date, document.title,
-                document.content_summary, document.main_topics, document.past_events,
-                document.future_actions, document.participants, len(chunks), 
+                document.content_summary, json.dumps(document.main_topics) if document.main_topics else '[]', 
+                json.dumps(document.past_events) if document.past_events else '[]',
+                json.dumps(document.future_actions) if document.future_actions else '[]', 
+                json.dumps(document.participants) if document.participants else '[]', len(chunks), 
                 len(document.content), document.user_id, document.meeting_id,
                 document.project_id, document.folder_path, datetime.now()
             ))
@@ -411,10 +425,10 @@ class SQLiteOperations:
                     date=datetime.fromisoformat(row[10]) if row[10] else None,
                     document_title=row[11],
                     content_summary=row[12],
-                    main_topics=row[13],
-                    past_events=row[14],
-                    future_actions=row[15],
-                    participants=row[16]
+                    main_topics=self._safe_json_loads(row[13]),
+                    past_events=self._safe_json_loads(row[14]),
+                    future_actions=self._safe_json_loads(row[15]),
+                    participants=self._safe_json_loads(row[16])
                 )
                 chunks.append(chunk)
             
@@ -472,10 +486,10 @@ class SQLiteOperations:
                     date=datetime.fromisoformat(row[2]),
                     title=row[3],
                     content_summary=row[4],
-                    main_topics=row[5],
-                    past_events=row[6],
-                    future_actions=row[7],
-                    participants=row[8],
+                    main_topics=self._safe_json_loads(row[5]),
+                    past_events=self._safe_json_loads(row[6]),
+                    future_actions=self._safe_json_loads(row[7]),
+                    participants=self._safe_json_loads(row[8]),
                     user_id=row[9],
                     meeting_id=row[10],
                     project_id=row[11],
