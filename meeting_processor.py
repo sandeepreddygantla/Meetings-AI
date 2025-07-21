@@ -3188,7 +3188,33 @@ Return only the date in YYYY-MM-DD format (e.g., 2025-07-14) or "NONE" if no dat
                 query_vector, user_id, search_filters, top_k=context_limit
             )
             
+            logger.info(f"Enhanced search returned {len(enhanced_results) if enhanced_results else 0} results")
+            logger.info(f"Search filters applied: {search_filters}")
+            
             if not enhanced_results:
+                logger.warning("Enhanced search returned no results - falling back to basic search")
+                # Fallback to basic search without metadata filters
+                try:
+                    basic_results = self.vector_db.search_similar_chunks(query_vector, top_k=context_limit)
+                    if basic_results:
+                        chunks = self.vector_db.get_chunks_by_ids([chunk_id for chunk_id, _ in basic_results])
+                        if chunks:
+                            logger.info(f"Basic search fallback returned {len(chunks)} chunks")
+                            # Convert to enhanced format for compatibility
+                            score_map = {chunk_id: score for chunk_id, score in basic_results}
+                            enhanced_format = []
+                            for chunk in chunks:
+                                enhanced_format.append({
+                                    'chunk': chunk,
+                                    'similarity_score': score_map.get(chunk.chunk_id, 0.0),
+                                    'context': ''
+                                })
+                            logger.info(f"Converted {len(enhanced_format)} chunks to enhanced format for fallback")
+                            response, context = self._generate_intelligence_response(query, enhanced_format, user_id)
+                            return (response, context) if include_context else response
+                except Exception as e:
+                    logger.error(f"Fallback search failed: {e}")
+                
                 return "I couldn't find any relevant information for your query. Please try rephrasing or check if you have uploaded meeting documents.", ""
             
             # Generate context-aware response

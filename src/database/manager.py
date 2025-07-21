@@ -155,18 +155,28 @@ class DatabaseManager:
             chunks = self.get_chunks_by_ids(chunk_ids)
             logger.info(f"Retrieved {len(chunks)} chunks from database for {len(chunk_ids)} chunk IDs")
             
+            # Debug: Check user IDs in chunks
+            chunk_user_ids = set(chunk.user_id for chunk in chunks)
+            logger.info(f"Chunk user IDs found: {chunk_user_ids}")
+            logger.info(f"Query user ID: '{user_id}'")
+            
             # Create results with scores
             enhanced_results = []
             score_map = {chunk_id: score for chunk_id, score in vector_results}
             
             for chunk in chunks:
-                if chunk.user_id == user_id or user_id is None:
+                logger.debug(f"Checking chunk {chunk.chunk_id}: chunk.user_id='{chunk.user_id}', query user_id='{user_id}'")
+                if chunk.user_id == user_id or user_id is None or chunk.user_id is None:
                     result = {
                         'chunk': chunk,
                         'similarity_score': score_map.get(chunk.chunk_id, 0.0),
                         'context': self._reconstruct_chunk_context(chunk)
                     }
                     enhanced_results.append(result)
+                else:
+                    logger.debug(f"Chunk {chunk.chunk_id} filtered out due to user_id mismatch")
+            
+            logger.info(f"Enhanced search: {len(enhanced_results)} chunks passed user_id filter (query user_id: '{user_id}')")
             
             # Apply metadata filters if provided
             if filters:

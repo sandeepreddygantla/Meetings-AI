@@ -92,11 +92,13 @@ def initialize_services():
         db_manager = DatabaseManager()
         logger.info("Database manager initialized")
         
-        # Initialize processor for backwards compatibility
+        # Initialize processor for backwards compatibility - share database manager
         if EnhancedMeetingDocumentProcessor:
             try:
                 processor = EnhancedMeetingDocumentProcessor(chunk_size=1000, chunk_overlap=200)
-                logger.info("Processor initialized for backwards compatibility")
+                # CRITICAL FIX: Share the same database manager instead of creating a new one
+                processor.vector_db = db_manager
+                logger.info("Processor initialized with shared database manager")
             except Exception as e:
                 logger.error(f"Failed to initialize processor: {e}")
                 processor = None

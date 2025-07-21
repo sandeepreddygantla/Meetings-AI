@@ -95,6 +95,9 @@ class ChatService:
                             include_context=True
                         )
                         
+                        logger.info(f"Chat service received response from processor. Length: {len(response)} characters")
+                        logger.info(f"Response preview: {response[:100]}..." if response else "Response is empty!")
+                        
                         # Generate follow-up questions
                         try:
                             follow_up_questions = self.processor.generate_follow_up_questions(message, response, context)
