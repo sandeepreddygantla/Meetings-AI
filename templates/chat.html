@@ -69,6 +69,7 @@
                 <div class="chat-title" id="chat-title">Document Fulfillment</div>
                 <div class="header-actions">
                     <button class="icon-btn" title="Upload Documents" onclick="showUploadModal()">📁</button>
+                    <button class="icon-btn" title="Manage Documents" onclick="showDocumentManagement()">🧹</button>
                     <button class="icon-btn" title="Statistics" onclick="showStats()">📊</button>
                     <button class="icon-btn" title="Help" onclick="showHelp()">❓</button>
                     <button class="icon-btn" title="Refresh" onclick="refreshSystem()">🔄</button>
@@ -276,6 +277,84 @@
             <div class="modal-actions">
                 <button class="modal-btn modal-btn-secondary" onclick="showAccountSettings()">Account Settings</button>
                 <button class="modal-btn modal-btn-danger" onclick="logout()">Logout</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Document Management Modal -->
+    <div class="modal" id="document-management-modal">
+        <div class="modal-content document-management-content">
+            <div class="modal-header">
+                <div class="modal-title">
+                    <span class="modal-icon">🧹</span>
+                    Document Management
+                </div>
+                <button class="close-btn" onclick="hideDocumentManagement()">×</button>
+            </div>
+            
+            <div class="document-management-body">
+                <!-- Search and Filter Section -->
+                <div class="document-filters">
+                    <div class="filter-group">
+                        <input type="text" id="document-search" placeholder="Search documents..." class="search-input">
+                        <select id="project-filter" class="filter-select">
+                            <option value="">All Projects</option>
+                        </select>
+                        <button class="btn btn-secondary" onclick="refreshDocumentList()">🔄 Refresh</button>
+                    </div>
+                </div>
+
+                <!-- Storage Stats -->
+                <div class="storage-stats" id="storage-stats">
+                    <div class="stat-item">
+                        <span class="stat-label">Total Documents:</span>
+                        <span class="stat-value" id="total-docs-count">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Total Size:</span>
+                        <span class="stat-value" id="total-docs-size">0 MB</span>
+                    </div>
+                </div>
+
+                <!-- Document List -->
+                <div class="document-list-container">
+                    <div class="document-list-header">
+                        <div class="list-actions">
+                            <button class="btn btn-secondary btn-sm" onclick="selectAllDocuments()">Select All</button>
+                            <button class="btn btn-secondary btn-sm" onclick="clearDocumentSelection()">Clear Selection</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteSelectedDocuments()" id="delete-selected-btn" disabled>
+                                🗑️ Delete Selected
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="document-list-content" id="document-list-content">
+                        <div class="loading-indicator" id="document-loading">
+                            <span>Loading documents...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="hideDocumentManagement()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Document Deletion Confirmation Modal -->
+    <div class="custom-modal" id="document-delete-modal">
+        <div class="custom-modal-content">
+            <div class="modal-header">
+                <span class="modal-icon">⚠️</span>
+                <span class="modal-title">Delete Documents</span>
+            </div>
+            <div class="modal-message" id="document-delete-message">
+                Are you sure you want to delete the selected document(s)? This action cannot be undone and will remove the document(s) from all storage layers including the search index.
+            </div>
+            <div class="modal-actions">
+                <button class="modal-btn modal-btn-cancel" onclick="closeDocumentDeleteModal()">Cancel</button>
+                <button class="modal-btn modal-btn-delete" onclick="confirmDocumentDeletion()">Delete</button>
             </div>
         </div>
     </div>

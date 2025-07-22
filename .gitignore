@@ -41,3 +41,6 @@ live-tester.js
 live-test-report.json
 ENVIRONMENT_SETUP.md
 .env.example
+meeting_documents.db
+sessions.db
+src/database/vector_operations.py.backup

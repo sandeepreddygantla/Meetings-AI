@@ -1203,3 +1203,375 @@ class SQLiteOperations:
         except Exception as e:
             logger.error(f"Error getting database stats: {e}")
             return {}
+    
+    # Document Deletion Operations
+    def get_document_file_path(self, document_id: str) -> Optional[str]:
+        """Get the file path for a document before deletion"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT filename, folder_path FROM documents 
+                WHERE document_id = ?
+            ''', (document_id,))
+            
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                filename, folder_path = result
+                if folder_path:
+                    return os.path.join(folder_path, filename)
+                else:
+                    # Fallback to default structure if folder_path is None
+                    return filename
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting document file path: {e}")
+            return None
+    
+    def delete_chunks_by_document_id(self, document_id: str) -> bool:
+        """Delete all chunks for a specific document"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Get count of chunks to be deleted for logging
+            cursor.execute('SELECT COUNT(*) FROM chunks WHERE document_id = ?', (document_id,))
+            chunk_count = cursor.fetchone()[0]
+            
+            if chunk_count > 0:
+                cursor.execute('DELETE FROM chunks WHERE document_id = ?', (document_id,))
+                conn.commit()
+                logger.info(f"Deleted {chunk_count} chunks for document {document_id}")
+            
+            conn.close()
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deleting chunks for document {document_id}: {e}")
+            return False
+    
+    def delete_document_by_id(self, document_id: str, user_id: str) -> bool:
+        """Delete a document by ID with user verification"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Verify user owns the document
+            cursor.execute('''
+                SELECT COUNT(*) FROM documents 
+                WHERE document_id = ? AND user_id = ?
+            ''', (document_id, user_id))
+            
+            if cursor.fetchone()[0] == 0:
+                logger.warning(f"User {user_id} attempted to delete document {document_id} they don't own")
+                conn.close()
+                return False
+            
+            # Delete the document
+            cursor.execute('DELETE FROM documents WHERE document_id = ? AND user_id = ?', (document_id, user_id))
+            
+            if cursor.rowcount > 0:
+                conn.commit()
+                logger.info(f"Deleted document {document_id} for user {user_id}")
+                conn.close()
+                return True
+            else:
+                logger.warning(f"No document found with ID {document_id} for user {user_id}")
+                conn.close()
+                return False
+            
+        except Exception as e:
+            logger.error(f"Error deleting document {document_id}: {e}")
+            return False
+    
+    def delete_multiple_documents(self, document_ids: List[str], user_id: str) -> Dict[str, bool]:
+        """Delete multiple documents with user verification"""
+        results = {}
+        
+        if not document_ids:
+            return results
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Verify user owns all documents
+            placeholders = ','.join(['?' for _ in document_ids])
+            query_params = document_ids + [user_id]
+            
+            cursor.execute(f'''
+                SELECT document_id FROM documents 
+                WHERE document_id IN ({placeholders}) AND user_id = ?
+            ''', query_params)
+            
+            owned_documents = {row[0] for row in cursor.fetchall()}
+            
+            # Process each document
+            for doc_id in document_ids:
+                if doc_id in owned_documents:
+                    try:
+                        cursor.execute('DELETE FROM documents WHERE document_id = ? AND user_id = ?', (doc_id, user_id))
+                        results[doc_id] = cursor.rowcount > 0
+                        if results[doc_id]:
+                            logger.info(f"Deleted document {doc_id} for user {user_id}")
+                    except Exception as e:
+                        logger.error(f"Error deleting document {doc_id}: {e}")
+                        results[doc_id] = False
+                else:
+                    logger.warning(f"User {user_id} attempted to delete document {doc_id} they don't own")
+                    results[doc_id] = False
+            
+            conn.commit()
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"Error in batch document deletion: {e}")
+            # Mark all as failed if there's a database error
+            for doc_id in document_ids:
+                if doc_id not in results:
+                    results[doc_id] = False
+        
+        return results
+    
+    def get_document_metadata_for_deletion(self, document_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+        """Get document metadata needed for safe deletion"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT document_id, filename, folder_path, user_id, project_id, 
+                       meeting_id, file_size, chunk_count, created_at
+                FROM documents 
+                WHERE document_id = ? AND user_id = ?
+            ''', (document_id, user_id))
+            
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                return {
+                    'document_id': result[0],
+                    'filename': result[1],
+                    'folder_path': result[2],
+                    'user_id': result[3],
+                    'project_id': result[4],
+                    'meeting_id': result[5],
+                    'file_size': result[6],
+                    'chunk_count': result[7],
+                    'created_at': result[8]
+                }
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting document metadata for deletion: {e}")
+            return None
+    
+    def get_chunk_ids_by_document_id(self, document_id: str) -> List[str]:
+        """Get all chunk IDs for a document (needed for vector deletion)"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('SELECT chunk_id FROM chunks WHERE document_id = ?', (document_id,))
+            chunk_ids = [row[0] for row in cursor.fetchall()]
+            
+            conn.close()
+            return chunk_ids
+            
+        except Exception as e:
+            logger.error(f"Error getting chunk IDs for document {document_id}: {e}")
+            return []
+    
+    # Deletion Audit and Safety Operations
+    def create_deletion_audit_log(self, user_id: str, document_id: str, action: str, 
+                                 metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """Create an audit log entry for deletion operations"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Create audit table if it doesn't exist
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS deletion_audit (
+                    audit_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    document_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    metadata TEXT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    ip_address TEXT,
+                    user_agent TEXT
+                )
+            ''')
+            
+            import uuid
+            audit_id = str(uuid.uuid4())
+            
+            cursor.execute('''
+                INSERT INTO deletion_audit 
+                (audit_id, user_id, document_id, action, metadata)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (
+                audit_id,
+                user_id,
+                document_id,
+                action,
+                json.dumps(metadata) if metadata else None
+            ))
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"Created deletion audit log: {audit_id} for document {document_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error creating deletion audit log: {e}")
+            return False
+    
+    def create_deletion_backup(self, document_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+        """Create a backup of document data before deletion for potential recovery"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Create backup table if it doesn't exist
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS document_backups (
+                    backup_id TEXT PRIMARY KEY,
+                    original_document_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    document_data TEXT NOT NULL,
+                    chunks_data TEXT NOT NULL,
+                    backup_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    expiry_date DATETIME
+                )
+            ''')
+            
+            # Get document data
+            cursor.execute('''
+                SELECT * FROM documents WHERE document_id = ? AND user_id = ?
+            ''', (document_id, user_id))
+            document_row = cursor.fetchone()
+            
+            if not document_row:
+                return None
+            
+            # Get chunks data
+            cursor.execute('''
+                SELECT * FROM chunks WHERE document_id = ?
+            ''', (document_id,))
+            chunks_rows = cursor.fetchall()
+            
+            # Create backup entry
+            import uuid
+            from datetime import timedelta
+            
+            backup_id = str(uuid.uuid4())
+            expiry_date = datetime.now() + timedelta(days=30)  # Keep backup for 30 days
+            
+            # Get column names for proper serialization
+            cursor.execute("PRAGMA table_info(documents)")
+            doc_columns = [row[1] for row in cursor.fetchall()]
+            
+            cursor.execute("PRAGMA table_info(chunks)")
+            chunk_columns = [row[1] for row in cursor.fetchall()]
+            
+            # Serialize data
+            document_data = dict(zip(doc_columns, document_row))
+            chunks_data = [dict(zip(chunk_columns, chunk_row)) for chunk_row in chunks_rows]
+            
+            cursor.execute('''
+                INSERT INTO document_backups 
+                (backup_id, original_document_id, user_id, document_data, chunks_data, expiry_date)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (
+                backup_id,
+                document_id,
+                user_id,
+                json.dumps(document_data),
+                json.dumps(chunks_data),
+                expiry_date
+            ))
+            
+            conn.commit()
+            conn.close()
+            
+            backup_info = {
+                'backup_id': backup_id,
+                'document_id': document_id,
+                'backup_timestamp': datetime.now().isoformat(),
+                'expiry_date': expiry_date.isoformat(),
+                'document_count': 1,
+                'chunks_count': len(chunks_data)
+            }
+            
+            logger.info(f"Created deletion backup: {backup_id} for document {document_id}")
+            return backup_info
+            
+        except Exception as e:
+            logger.error(f"Error creating deletion backup: {e}")
+            return None
+    
+    def cleanup_expired_backups(self) -> int:
+        """Clean up expired document backups"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                DELETE FROM document_backups 
+                WHERE expiry_date < CURRENT_TIMESTAMP
+            ''')
+            
+            deleted_count = cursor.rowcount
+            conn.commit()
+            conn.close()
+            
+            if deleted_count > 0:
+                logger.info(f"Cleaned up {deleted_count} expired document backups")
+            
+            return deleted_count
+            
+        except Exception as e:
+            logger.error(f"Error cleaning up expired backups: {e}")
+            return 0
+    
+    def get_deletion_audit_logs(self, user_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get recent deletion audit logs for a user"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT audit_id, document_id, action, metadata, timestamp
+                FROM deletion_audit 
+                WHERE user_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            ''', (user_id, limit))
+            
+            results = []
+            for row in cursor.fetchall():
+                result = {
+                    'audit_id': row[0],
+                    'document_id': row[1],
+                    'action': row[2],
+                    'metadata': json.loads(row[3]) if row[3] else {},
+                    'timestamp': row[4]
+                }
+                results.append(result)
+            
+            conn.close()
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error getting deletion audit logs: {e}")
+            return []

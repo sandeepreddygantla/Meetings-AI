@@ -376,3 +376,266 @@ class DocumentService:
         except Exception as e:
             logger.error(f"Job status error: {e}")
             return False, None, f"Error getting job status: {str(e)}"
+    
+    # Document Deletion Operations
+    def delete_document(self, document_id: str, user_id: str) -> Tuple[bool, str]:
+        """
+        Delete a single document completely.
+        
+        Args:
+            document_id: Document ID to delete
+            user_id: User ID for verification
+            
+        Returns:
+            Tuple of (success, message)
+        """
+        try:
+            logger.info(f"Deleting document {document_id} for user {user_id}")
+            
+            # Perform complete deletion
+            result = self.db_manager.delete_document_complete(document_id, user_id)
+            
+            if result['success']:
+                message = f"Document {document_id} deleted successfully"
+                
+                # Add details about what was cleaned up
+                cleanup_details = []
+                if result['filesystem']:
+                    cleanup_details.append("file")
+                if result['sqlite_document']:
+                    cleanup_details.append("database")
+                if result['vectors']:
+                    cleanup_details.append("search index")
+                
+                if cleanup_details:
+                    message += f" (cleaned: {', '.join(cleanup_details)})"
+                
+                logger.info(message)
+                return True, message
+            else:
+                error_msg = f"Failed to delete document {document_id}"
+                if result.get('error'):
+                    error_msg += f": {result['error']}"
+                
+                logger.error(error_msg)
+                return False, error_msg
+            
+        except Exception as e:
+            error_msg = f"Error deleting document {document_id}: {str(e)}"
+            logger.error(error_msg)
+            return False, error_msg
+    
+    def delete_multiple_documents(self, document_ids: List[str], user_id: str) -> Tuple[bool, Dict[str, Any], str]:
+        """
+        Delete multiple documents with detailed results.
+        
+        Args:
+            document_ids: List of document IDs to delete
+            user_id: User ID for verification
+            
+        Returns:
+            Tuple of (success, detailed_results, message)
+        """
+        try:
+            if not document_ids:
+                return False, {}, "No documents provided for deletion"
+            
+            logger.info(f"Deleting {len(document_ids)} documents for user {user_id}")
+            
+            # Perform batch deletion
+            results = self.db_manager.delete_multiple_documents_complete(document_ids, user_id)
+            
+            summary = results.get('summary', {})
+            successful_count = summary.get('successful', 0)
+            failed_count = summary.get('failed', 0)
+            total_count = summary.get('total_requested', len(document_ids))
+            
+            if successful_count > 0:
+                if failed_count == 0:
+                    message = f"Successfully deleted all {successful_count} documents"
+                    success = True
+                else:
+                    message = f"Deleted {successful_count} of {total_count} documents ({failed_count} failed)"
+                    success = True  # Partial success
+            else:
+                message = f"Failed to delete any of the {total_count} documents"
+                success = False
+            
+            logger.info(f"Batch deletion completed: {message}")
+            return success, results, message
+            
+        except Exception as e:
+            error_msg = f"Error in batch document deletion: {str(e)}"
+            logger.error(error_msg)
+            return False, {}, error_msg
+    
+    def get_deletable_documents(self, user_id: str, filters: Optional[Dict[str, Any]] = None) -> Tuple[bool, List[Dict], str]:
+        """
+        Get list of documents that can be deleted by the user.
+        
+        Args:
+            user_id: User ID
+            filters: Optional filters (project_id, date_range, min_size, etc.)
+            
+        Returns:
+            Tuple of (success, documents_list, message)
+        """
+        try:
+            # Get deletable documents with filters
+            documents = self.db_manager.get_deletable_documents(user_id, filters)
+            
+            # Enhance with deletion-relevant metadata
+            enhanced_docs = []
+            for doc in documents:
+                enhanced_doc = dict(doc)  # Copy document data
+                
+                # Add deletion-specific metadata
+                enhanced_doc['can_delete'] = True  # All returned docs are deletable
+                enhanced_doc['deletion_impact'] = self._assess_deletion_impact(doc)
+                
+                enhanced_docs.append(enhanced_doc)
+            
+            message = f"Found {len(enhanced_docs)} deletable documents"
+            if filters:
+                message += " (with filters applied)"
+            
+            return True, enhanced_docs, message
+            
+        except Exception as e:
+            error_msg = f"Error getting deletable documents: {str(e)}"
+            logger.error(error_msg)
+            return False, [], error_msg
+    
+    def _assess_deletion_impact(self, document: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Assess the impact of deleting a document.
+        
+        Args:
+            document: Document metadata
+            
+        Returns:
+            Impact assessment dictionary
+        """
+        try:
+            impact = {
+                'size_saved': document.get('file_size', 0),
+                'chunks_removed': document.get('chunk_count', 0),
+                'warnings': []
+            }
+            
+            # Add warnings for potentially important documents
+            if document.get('chunk_count', 0) > 50:
+                impact['warnings'].append('Large document with many sections')
+            
+            file_size = document.get('file_size', 0)
+            if file_size > 10 * 1024 * 1024:  # > 10MB
+                impact['warnings'].append('Large file (>10MB)')
+            
+            # Check if document is recent
+            created_at = document.get('created_at')
+            if created_at:
+                try:
+                    created_date = datetime.fromisoformat(created_at)
+                    days_old = (datetime.now() - created_date).days
+                    if days_old < 7:
+                        impact['warnings'].append('Recently uploaded (less than 7 days ago)')
+                except Exception:
+                    pass
+            
+            return impact
+            
+        except Exception as e:
+            logger.error(f"Error assessing deletion impact: {e}")
+            return {'size_saved': 0, 'chunks_removed': 0, 'warnings': ['Unable to assess impact']}
+    
+    def get_storage_statistics(self, user_id: str) -> Tuple[bool, Dict[str, Any], str]:
+        """
+        Get storage usage statistics for a user.
+        
+        Args:
+            user_id: User ID
+            
+        Returns:
+            Tuple of (success, statistics, message)
+        """
+        try:
+            # Get comprehensive deletion statistics
+            deletion_stats = self.db_manager.get_deletion_statistics()
+            
+            # Get user-specific document count and sizes
+            user_documents = self.db_manager.get_all_documents(user_id)
+            
+            user_stats = {
+                'document_count': len(user_documents),
+                'total_size': sum(doc.get('file_size', 0) for doc in user_documents),
+                'total_chunks': sum(doc.get('chunk_count', 0) for doc in user_documents)
+            }
+            
+            # Combine with system-wide stats
+            combined_stats = {
+                'user_stats': user_stats,
+                'system_stats': deletion_stats,
+                'recommendations': self._generate_cleanup_recommendations(user_documents)
+            }
+            
+            return True, combined_stats, "Storage statistics retrieved"
+            
+        except Exception as e:
+            error_msg = f"Error getting storage statistics: {str(e)}"
+            logger.error(error_msg)
+            return False, {}, error_msg
+    
+    def _generate_cleanup_recommendations(self, documents: List[Dict[str, Any]]) -> List[str]:
+        """
+        Generate cleanup recommendations based on user's documents.
+        
+        Args:
+            documents: List of user documents
+            
+        Returns:
+            List of recommendation strings
+        """
+        recommendations = []
+        
+        try:
+            if not documents:
+                return recommendations
+            
+            # Large files recommendation
+            large_files = [doc for doc in documents if doc.get('file_size', 0) > 5 * 1024 * 1024]
+            if large_files:
+                recommendations.append(f"Consider reviewing {len(large_files)} large files (>5MB) for potential cleanup")
+            
+            # Old files recommendation
+            old_files = []
+            for doc in documents:
+                created_at = doc.get('created_at')
+                if created_at:
+                    try:
+                        created_date = datetime.fromisoformat(created_at)
+                        days_old = (datetime.now() - created_date).days
+                        if days_old > 90:
+                            old_files.append(doc)
+                    except Exception:
+                        pass
+            
+            if old_files:
+                recommendations.append(f"Consider archiving or deleting {len(old_files)} files older than 90 days")
+            
+            # Project-based recommendations
+            project_counts = {}
+            for doc in documents:
+                project_id = doc.get('project_id', 'no_project')
+                project_counts[project_id] = project_counts.get(project_id, 0) + 1
+            
+            if len(project_counts) > 5:
+                recommendations.append(f"You have documents across {len(project_counts)} projects - consider consolidating")
+            
+            if not recommendations:
+                recommendations.append("Your document storage looks well organized!")
+            
+        except Exception as e:
+            logger.error(f"Error generating cleanup recommendations: {e}")
+            recommendations = ["Unable to generate cleanup recommendations"]
+        
+        return recommendations

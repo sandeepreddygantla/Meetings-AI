@@ -4200,3 +4200,382 @@ function refreshSystem() {
 document.addEventListener('DOMContentLoaded', function() {
     updateUserProfileDisplay();
 });
+
+// ===============================
+// Document Management Functions
+// ===============================
+
+// Global variables for document management
+let managedDocuments = [];
+let selectedDocumentIds = [];
+
+// Show document management modal
+function showDocumentManagement() {
+    const modal = document.getElementById('document-management-modal');
+    if (modal) {
+        modal.classList.add('active');
+        loadDocumentManagementData();
+    }
+}
+
+// Hide document management modal
+function hideDocumentManagement() {
+    const modal = document.getElementById('document-management-modal');
+    if (modal) {
+        modal.classList.remove('active');
+        clearDocumentSelection();
+    }
+}
+
+// Load all document management data
+async function loadDocumentManagementData() {
+    try {
+        // Show loading indicator
+        const loadingIndicator = document.getElementById('document-loading');
+        const documentListContent = document.getElementById('document-list-content');
+        
+        if (loadingIndicator) loadingIndicator.style.display = 'block';
+        
+        // Load documents, projects, and storage stats in parallel
+        const [documentsResponse, projectsResponse] = await Promise.all([
+            fetch('/meetingsai/api/documents', {
+                credentials: 'same-origin'
+            }),
+            fetch('/meetingsai/api/projects', {
+                credentials: 'same-origin'
+            })
+        ]);
+
+        const documentsData = await documentsResponse.json();
+        const projectsData = await projectsResponse.json();
+
+        if (documentsData.success) {
+            managedDocuments = documentsData.documents || [];
+            renderDocumentList(managedDocuments);
+            updateStorageStats(managedDocuments);
+        } else {
+            showNotification('Failed to load documents: ' + documentsData.error, 'error');
+        }
+
+        if (projectsData.success) {
+            populateProjectFilter(projectsData.projects || []);
+        }
+
+        // Hide loading indicator
+        if (loadingIndicator) loadingIndicator.style.display = 'none';
+
+    } catch (error) {
+        console.error('Error loading document management data:', error);
+        showNotification('Failed to load document data', 'error');
+        
+        // Hide loading indicator
+        const loadingIndicator = document.getElementById('document-loading');
+        if (loadingIndicator) loadingIndicator.style.display = 'none';
+    }
+}
+
+// Render document list
+function renderDocumentList(documents) {
+    const container = document.getElementById('document-list-content');
+    if (!container) return;
+
+    if (!documents || documents.length === 0) {
+        container.innerHTML = '<div class="no-documents">No documents found.</div>';
+        return;
+    }
+
+    const documentsHTML = documents.map(doc => {
+        const fileSize = formatFileSize(doc.file_size || 0);
+        const uploadDate = new Date(doc.created_at).toLocaleString();
+        const projectName = doc.project_name || 'No Project';
+        
+        return `
+            <div class="document-item" data-document-id="${doc.document_id}">
+                <div class="document-checkbox">
+                    <input type="checkbox" 
+                           id="doc-${doc.document_id}" 
+                           value="${doc.document_id}"
+                           onchange="toggleDocumentSelection('${doc.document_id}')">
+                </div>
+                <div class="document-details">
+                    <div class="document-name">${escapeHtml(doc.filename)}</div>
+                    <div class="document-meta">
+                        <span class="meta-item">📁 ${escapeHtml(projectName)}</span>
+                        <span class="meta-item">📏 ${fileSize}</span>
+                        <span class="meta-item">📊 ${doc.chunk_count || 0} chunks</span>
+                        <span class="meta-item">📅 ${uploadDate}</span>
+                    </div>
+                    <div class="document-id">ID: ${doc.document_id}</div>
+                </div>
+                <div class="document-actions">
+                    <button class="btn btn-danger btn-sm" 
+                            onclick="deleteSingleDocument('${doc.document_id}', '${escapeHtml(doc.filename)}')"
+                            title="Delete this document">
+                        🗑️ Delete
+                    </button>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    container.innerHTML = documentsHTML;
+}
+
+// Update storage statistics
+function updateStorageStats(documents) {
+    const totalDocs = documents.length;
+    const totalSize = documents.reduce((sum, doc) => sum + (doc.file_size || 0), 0);
+    
+    const totalDocsElement = document.getElementById('total-docs-count');
+    const totalSizeElement = document.getElementById('total-docs-size');
+    
+    if (totalDocsElement) totalDocsElement.textContent = totalDocs;
+    if (totalSizeElement) totalSizeElement.textContent = formatFileSize(totalSize);
+}
+
+// Populate project filter dropdown
+function populateProjectFilter(projects) {
+    const projectFilter = document.getElementById('project-filter');
+    if (!projectFilter) return;
+
+    // Clear existing options except "All Projects"
+    projectFilter.innerHTML = '<option value="">All Projects</option>';
+    
+    projects.forEach(project => {
+        const option = document.createElement('option');
+        option.value = project.project_id;
+        option.textContent = project.project_name;
+        projectFilter.appendChild(option);
+    });
+}
+
+// Format file size helper
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+// Escape HTML helper
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// Toggle document selection
+function toggleDocumentSelection(documentId) {
+    const checkbox = document.getElementById(`doc-${documentId}`);
+    if (!checkbox) return;
+
+    if (checkbox.checked) {
+        if (!selectedDocumentIds.includes(documentId)) {
+            selectedDocumentIds.push(documentId);
+        }
+    } else {
+        selectedDocumentIds = selectedDocumentIds.filter(id => id !== documentId);
+    }
+
+    updateDeleteButton();
+}
+
+// Update delete button state
+function updateDeleteButton() {
+    const deleteBtn = document.getElementById('delete-selected-btn');
+    if (deleteBtn) {
+        deleteBtn.disabled = selectedDocumentIds.length === 0;
+        deleteBtn.textContent = selectedDocumentIds.length > 0 
+            ? `🗑️ Delete Selected (${selectedDocumentIds.length})`
+            : '🗑️ Delete Selected';
+    }
+}
+
+// Select all documents
+function selectAllDocuments() {
+    const checkboxes = document.querySelectorAll('.document-checkbox input[type="checkbox"]');
+    selectedDocumentIds = [];
+    
+    checkboxes.forEach(checkbox => {
+        checkbox.checked = true;
+        selectedDocumentIds.push(checkbox.value);
+    });
+    
+    updateDeleteButton();
+}
+
+// Clear document selection
+function clearDocumentSelection() {
+    const checkboxes = document.querySelectorAll('.document-checkbox input[type="checkbox"]');
+    checkboxes.forEach(checkbox => {
+        checkbox.checked = false;
+    });
+    
+    selectedDocumentIds = [];
+    updateDeleteButton();
+}
+
+// Delete selected documents
+function deleteSelectedDocuments() {
+    if (selectedDocumentIds.length === 0) {
+        showNotification('No documents selected for deletion', 'warning');
+        return;
+    }
+
+    const count = selectedDocumentIds.length;
+    const message = `Are you sure you want to delete ${count} document${count > 1 ? 's' : ''}? This action cannot be undone and will remove the document${count > 1 ? 's' : ''} from all storage layers including the search index.`;
+    
+    // Update confirmation message
+    const messageElement = document.getElementById('document-delete-message');
+    if (messageElement) {
+        messageElement.textContent = message;
+    }
+    
+    // Show confirmation modal
+    const deleteModal = document.getElementById('document-delete-modal');
+    if (deleteModal) {
+        deleteModal.classList.add('active');
+    }
+}
+
+// Delete single document
+function deleteSingleDocument(documentId, filename) {
+    selectedDocumentIds = [documentId];
+    
+    const message = `Are you sure you want to delete "${filename}"? This action cannot be undone and will remove the document from all storage layers including the search index.`;
+    
+    // Update confirmation message
+    const messageElement = document.getElementById('document-delete-message');
+    if (messageElement) {
+        messageElement.textContent = message;
+    }
+    
+    // Show confirmation modal
+    const deleteModal = document.getElementById('document-delete-modal');
+    if (deleteModal) {
+        deleteModal.classList.add('active');
+    }
+}
+
+// Close document delete modal
+function closeDocumentDeleteModal() {
+    const deleteModal = document.getElementById('document-delete-modal');
+    if (deleteModal) {
+        deleteModal.classList.remove('active');
+    }
+}
+
+// Confirm document deletion
+async function confirmDocumentDeletion() {
+    if (selectedDocumentIds.length === 0) return;
+
+    try {
+        closeDocumentDeleteModal();
+        
+        // Show loading notification
+        showNotification('🗑️ Deleting documents...', 'info');
+
+        let response;
+        
+        if (selectedDocumentIds.length === 1) {
+            // Single document deletion
+            response = await fetch(`/meetingsai/api/documents/${selectedDocumentIds[0]}`, {
+                method: 'DELETE',
+                credentials: 'same-origin'
+            });
+        } else {
+            // Multiple document deletion
+            response = await fetch('/meetingsai/api/documents/batch', {
+                method: 'DELETE',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    document_ids: selectedDocumentIds
+                }),
+                credentials: 'same-origin'
+            });
+        }
+
+        const result = await response.json();
+
+        if (result.success) {
+            const count = selectedDocumentIds.length;
+            showNotification(`✅ Successfully deleted ${count} document${count > 1 ? 's' : ''}`, 'success');
+            
+            // Refresh the document list
+            await loadDocumentManagementData();
+            clearDocumentSelection();
+            
+        } else {
+            showNotification('❌ Failed to delete documents: ' + result.error, 'error');
+        }
+
+    } catch (error) {
+        console.error('Error deleting documents:', error);
+        showNotification('❌ Network error during deletion', 'error');
+    }
+}
+
+// Refresh document list
+async function refreshDocumentList() {
+    showNotification('🔄 Refreshing document list...', 'info');
+    await loadDocumentManagementData();
+    clearDocumentSelection();
+}
+
+// Search and filter documents
+function filterDocumentList() {
+    const searchTerm = document.getElementById('document-search')?.value?.toLowerCase() || '';
+    const projectFilter = document.getElementById('project-filter')?.value || '';
+    
+    let filteredDocuments = managedDocuments;
+    
+    // Apply search filter
+    if (searchTerm) {
+        filteredDocuments = filteredDocuments.filter(doc => 
+            doc.filename?.toLowerCase().includes(searchTerm) ||
+            doc.project_name?.toLowerCase().includes(searchTerm)
+        );
+    }
+    
+    // Apply project filter
+    if (projectFilter) {
+        filteredDocuments = filteredDocuments.filter(doc => 
+            doc.project_id === projectFilter
+        );
+    }
+    
+    renderDocumentList(filteredDocuments);
+    clearDocumentSelection();
+}
+
+// Add event listeners for search and filter
+document.addEventListener('DOMContentLoaded', function() {
+    const searchInput = document.getElementById('document-search');
+    const projectFilter = document.getElementById('project-filter');
+    
+    if (searchInput) {
+        searchInput.addEventListener('input', filterDocumentList);
+    }
+    
+    if (projectFilter) {
+        projectFilter.addEventListener('change', filterDocumentList);
+    }
+});
+
+// Add document management modal to close on outside click
+document.addEventListener('click', function(event) {
+    const documentModal = document.getElementById('document-management-modal');
+    if (documentModal && documentModal.classList.contains('active') && event.target === documentModal) {
+        hideDocumentManagement();
+    }
+    
+    const deleteModal = document.getElementById('document-delete-modal');
+    if (deleteModal && deleteModal.classList.contains('active')) {
+        if (event.target === deleteModal) {
+            closeDocumentDeleteModal();
+        }
+    }
+});

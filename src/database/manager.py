@@ -7,6 +7,7 @@ import logging
 import numpy as np
 from typing import List, Dict, Any, Optional, Tuple, Union
 from datetime import datetime
+import os
 
 from .vector_operations import VectorOperations
 from .sqlite_operations import SQLiteOperations
@@ -540,3 +541,416 @@ class DatabaseManager:
     def _rebuild_chunk_metadata(self):
         """Rebuild chunk metadata for backward compatibility"""
         self.vector_ops.rebuild_chunk_metadata(self.db_path)
+    
+    # Complete Document Deletion Operations
+    def delete_document_complete(self, document_id: str, user_id: str) -> Dict[str, Any]:
+        """Complete deletion of a document across all storage layers"""
+        result = {
+            'success': False,
+            'document_id': document_id,
+            'filesystem': False,
+            'sqlite_document': False,
+            'sqlite_chunks': False,
+            'vectors': False,
+            'error': None,
+            'rollback_needed': False
+        }
+        
+        try:
+            # Step 0: Create audit log entry
+            self.sqlite_ops.create_deletion_audit_log(
+                user_id, document_id, 'deletion_started', 
+                {'operation': 'delete_document_complete'}
+            )
+            
+            # Step 1: Get document metadata and file path before deletion
+            doc_metadata = self.sqlite_ops.get_document_metadata_for_deletion(document_id, user_id)
+            if not doc_metadata:
+                result['error'] = f"Document {document_id} not found or user {user_id} doesn't have access"
+                self.sqlite_ops.create_deletion_audit_log(
+                    user_id, document_id, 'deletion_failed', 
+                    {'error': result['error']}
+                )
+                return result
+            
+            # Step 1.5: Create backup before deletion
+            backup_info = self.sqlite_ops.create_deletion_backup(document_id, user_id)
+            if backup_info:
+                result['backup_created'] = backup_info
+                logger.info(f"Created backup {backup_info['backup_id']} for document {document_id}")
+            else:
+                logger.warning(f"Failed to create backup for document {document_id}")
+            
+            file_path = self.sqlite_ops.get_document_file_path(document_id)
+            chunk_ids = self.sqlite_ops.get_chunk_ids_by_document_id(document_id)
+            
+            logger.info(f"Starting complete deletion for document {document_id} (user: {user_id})")
+            logger.info(f"File path: {file_path}, Chunks: {len(chunk_ids)}")
+            
+            # Step 2: Delete from vector database first (can be rolled back)
+            if chunk_ids:
+                vector_success = self.vector_ops.delete_document_vectors(document_id, chunk_ids)
+                result['vectors'] = vector_success
+                if not vector_success:
+                    logger.warning(f"Vector deletion failed for document {document_id}, but continuing...")
+            else:
+                result['vectors'] = True  # No vectors to delete
+            
+            # Step 3: Delete chunks from SQLite
+            chunks_success = self.sqlite_ops.delete_chunks_by_document_id(document_id)
+            result['sqlite_chunks'] = chunks_success
+            
+            if not chunks_success:
+                result['error'] = "Failed to delete document chunks from database"
+                result['rollback_needed'] = True
+                return result
+            
+            # Step 4: Delete document from SQLite
+            doc_success = self.sqlite_ops.delete_document_by_id(document_id, user_id)
+            result['sqlite_document'] = doc_success
+            
+            if not doc_success:
+                result['error'] = "Failed to delete document from database"
+                result['rollback_needed'] = True
+                return result
+            
+            # Step 5: Delete physical file
+            if file_path and os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                    result['filesystem'] = True
+                    logger.info(f"Deleted physical file: {file_path}")
+                    
+                    # Clean up empty directories
+                    self._cleanup_empty_directories(os.path.dirname(file_path))
+                    
+                except Exception as e:
+                    logger.error(f"Error deleting physical file {file_path}: {e}")
+                    result['filesystem'] = False
+                    # File deletion failure is not critical - continue
+            else:
+                result['filesystem'] = True  # No file to delete or already gone
+            
+            # Check overall success
+            result['success'] = all([
+                result['sqlite_document'],
+                result['sqlite_chunks'],
+                result['vectors']
+                # Note: filesystem deletion failure is not blocking
+            ])
+            
+            if result['success']:
+                logger.info(f"Successfully completed deletion of document {document_id}")
+                # Log successful deletion
+                self.sqlite_ops.create_deletion_audit_log(
+                    user_id, document_id, 'deletion_completed', 
+                    {
+                        'filesystem': result['filesystem'],
+                        'sqlite_document': result['sqlite_document'],
+                        'sqlite_chunks': result['sqlite_chunks'],
+                        'vectors': result['vectors'],
+                        'backup_id': result.get('backup_created', {}).get('backup_id')
+                    }
+                )
+            else:
+                logger.error(f"Partial failure in document {document_id} deletion: {result}")
+                # Log failed deletion
+                self.sqlite_ops.create_deletion_audit_log(
+                    user_id, document_id, 'deletion_failed', 
+                    {
+                        'error': result.get('error'),
+                        'partial_results': result
+                    }
+                )
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in complete document deletion: {e}")
+            result['error'] = str(e)
+            result['rollback_needed'] = True
+            return result
+    
+    def delete_multiple_documents_complete(self, document_ids: List[str], user_id: str) -> Dict[str, Any]:
+        """Complete deletion of multiple documents with detailed results"""
+        results = {
+            'success': False,
+            'total_requested': len(document_ids),
+            'successful_deletions': [],
+            'failed_deletions': [],
+            'detailed_results': {},
+            'summary': {}
+        }
+        
+        try:
+            logger.info(f"Starting batch deletion of {len(document_ids)} documents for user {user_id}")
+            
+            for doc_id in document_ids:
+                try:
+                    result = self.delete_document_complete(doc_id, user_id)
+                    results['detailed_results'][doc_id] = result
+                    
+                    if result['success']:
+                        results['successful_deletions'].append(doc_id)
+                    else:
+                        results['failed_deletions'].append(doc_id)
+                        
+                except Exception as e:
+                    logger.error(f"Error deleting document {doc_id}: {e}")
+                    results['failed_deletions'].append(doc_id)
+                    results['detailed_results'][doc_id] = {
+                        'success': False,
+                        'error': str(e)
+                    }
+            
+            # Calculate summary
+            results['summary'] = {
+                'total_requested': results['total_requested'],
+                'successful': len(results['successful_deletions']),
+                'failed': len(results['failed_deletions']),
+                'success_rate': len(results['successful_deletions']) / max(1, results['total_requested'])
+            }
+            
+            results['success'] = len(results['successful_deletions']) > 0
+            
+            logger.info(f"Batch deletion completed: {results['summary']}")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error in batch document deletion: {e}")
+            results['error'] = str(e)
+            return results
+    
+    def get_deletable_documents(self, user_id: str, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Get list of documents that can be deleted by the user"""
+        try:
+            # Get all user documents
+            all_documents = self.get_all_documents(user_id)
+            
+            # Apply filters if provided
+            if filters:
+                filtered_docs = []
+                for doc in all_documents:
+                    include_doc = True
+                    
+                    # Filter by project
+                    if filters.get('project_id') and doc.get('project_id') != filters['project_id']:
+                        include_doc = False
+                    
+                    # Filter by date range
+                    if filters.get('date_range') and doc.get('date'):
+                        doc_date = datetime.fromisoformat(doc['date'])
+                        start_date, end_date = filters['date_range']
+                        if start_date and doc_date < start_date:
+                            include_doc = False
+                        if end_date and doc_date > end_date:
+                            include_doc = False
+                    
+                    # Filter by file size
+                    if filters.get('min_size') and doc.get('file_size', 0) < filters['min_size']:
+                        include_doc = False
+                    
+                    if include_doc:
+                        filtered_docs.append(doc)
+                
+                return filtered_docs
+            
+            return all_documents
+            
+        except Exception as e:
+            logger.error(f"Error getting deletable documents: {e}")
+            return []
+    
+    def _cleanup_empty_directories(self, directory_path: str):
+        """Recursively clean up empty directories"""
+        try:
+            if not os.path.exists(directory_path):
+                return
+            
+            # Don't delete the root meeting_documents directory
+            if directory_path.endswith('meeting_documents'):
+                return
+            
+            # Check if directory is empty
+            if os.path.isdir(directory_path) and not os.listdir(directory_path):
+                os.rmdir(directory_path)
+                logger.info(f"Removed empty directory: {directory_path}")
+                
+                # Recursively check parent directory
+                parent_dir = os.path.dirname(directory_path)
+                if parent_dir != directory_path:  # Avoid infinite recursion
+                    self._cleanup_empty_directories(parent_dir)
+                    
+        except Exception as e:
+            logger.error(f"Error cleaning up directory {directory_path}: {e}")
+    
+    def rebuild_vector_index_after_deletion(self) -> bool:
+        """Force rebuild of vector index (useful for maintenance)"""
+        try:
+            return self.vector_ops.force_rebuild_index()
+        except Exception as e:
+            logger.error(f"Error rebuilding vector index: {e}")
+            return False
+    
+    def get_deletion_statistics(self) -> Dict[str, Any]:
+        """Get comprehensive deletion and storage statistics"""
+        try:
+            # Get vector deletion stats
+            vector_stats = self.vector_ops.get_deletion_stats()
+            
+            # Get database stats
+            db_stats = self.get_statistics()
+            
+            # Calculate storage usage
+            storage_stats = self._calculate_storage_usage()
+            
+            return {
+                'vector_index': vector_stats,
+                'database': db_stats.get('database', {}),
+                'storage': storage_stats,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting deletion statistics: {e}")
+            return {}
+    
+    def _calculate_storage_usage(self) -> Dict[str, Any]:
+        """Calculate storage usage for meeting documents"""
+        try:
+            meeting_docs_path = "meeting_documents"
+            if not os.path.exists(meeting_docs_path):
+                return {'total_size': 0, 'file_count': 0, 'directory_count': 0}
+            
+            total_size = 0
+            file_count = 0
+            directory_count = 0
+            
+            for root, dirs, files in os.walk(meeting_docs_path):
+                directory_count += len(dirs)
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    try:
+                        file_size = os.path.getsize(file_path)
+                        total_size += file_size
+                        file_count += 1
+                    except OSError:
+                        pass  # Skip files we can't access
+            
+            return {
+                'total_size': total_size,
+                'total_size_mb': round(total_size / (1024 * 1024), 2),
+                'file_count': file_count,
+                'directory_count': directory_count
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating storage usage: {e}")
+            return {'error': str(e)}
+    
+    def validate_deletion_safety(self, document_ids: List[str], user_id: str) -> Dict[str, Any]:
+        """Validate whether it's safe to delete the specified documents"""
+        try:
+            safety_report = {
+                'safe_to_delete': True,
+                'warnings': [],
+                'blockers': [],
+                'document_analysis': {},
+                'total_impact': {
+                    'files_affected': len(document_ids),
+                    'estimated_size': 0,
+                    'chunks_affected': 0
+                }
+            }
+            
+            for doc_id in document_ids:
+                doc_metadata = self.sqlite_ops.get_document_metadata_for_deletion(doc_id, user_id)
+                if not doc_metadata:
+                    safety_report['blockers'].append(f"Document {doc_id} not found or access denied")
+                    safety_report['safe_to_delete'] = False
+                    continue
+                
+                # Analyze document for safety concerns
+                doc_analysis = {
+                    'size': doc_metadata.get('file_size', 0),
+                    'chunks': doc_metadata.get('chunk_count', 0),
+                    'age_days': 0,
+                    'warnings': []
+                }
+                
+                # Check document age
+                if doc_metadata.get('created_at'):
+                    try:
+                        created_date = datetime.fromisoformat(doc_metadata['created_at'])
+                        doc_analysis['age_days'] = (datetime.now() - created_date).days
+                        
+                        if doc_analysis['age_days'] < 1:
+                            doc_analysis['warnings'].append('Very recent document (less than 1 day old)')
+                        elif doc_analysis['age_days'] < 7:
+                            doc_analysis['warnings'].append('Recent document (less than 1 week old)')
+                    except Exception:
+                        pass
+                
+                # Check document size
+                if doc_analysis['size'] > 50 * 1024 * 1024:  # > 50MB
+                    doc_analysis['warnings'].append('Very large document (>50MB)')
+                elif doc_analysis['size'] > 10 * 1024 * 1024:  # > 10MB
+                    doc_analysis['warnings'].append('Large document (>10MB)')
+                
+                # Check chunk count
+                if doc_analysis['chunks'] > 100:
+                    doc_analysis['warnings'].append('Document with many sections (>100 chunks)')
+                
+                safety_report['document_analysis'][doc_id] = doc_analysis
+                safety_report['total_impact']['estimated_size'] += doc_analysis['size']
+                safety_report['total_impact']['chunks_affected'] += doc_analysis['chunks']
+                
+                # Collect warnings
+                safety_report['warnings'].extend([
+                    f"{doc_id}: {warning}" for warning in doc_analysis['warnings']
+                ])
+            
+            # Overall safety assessment
+            if len(safety_report['warnings']) > 10:
+                safety_report['blockers'].append('Too many warnings - review individual documents')
+                safety_report['safe_to_delete'] = False
+            
+            if safety_report['total_impact']['estimated_size'] > 500 * 1024 * 1024:  # > 500MB
+                safety_report['warnings'].append('Large total deletion size (>500MB)')
+            
+            return safety_report
+            
+        except Exception as e:
+            logger.error(f"Error validating deletion safety: {e}")
+            return {
+                'safe_to_delete': False,
+                'warnings': [],
+                'blockers': [f'Safety validation error: {str(e)}'],
+                'document_analysis': {},
+                'total_impact': {'files_affected': 0, 'estimated_size': 0, 'chunks_affected': 0}
+            }
+    
+    # Safety and Recovery Operations
+    def get_recent_deletions(self, user_id: str, days: int = 7) -> List[Dict[str, Any]]:
+        """Get recent deletions for potential recovery"""
+        try:
+            return self.sqlite_ops.get_deletion_audit_logs(user_id, limit=100)
+        except Exception as e:
+            logger.error(f"Error getting recent deletions: {e}")
+            return []
+    
+    def cleanup_old_backups(self) -> Dict[str, Any]:
+        """Clean up expired backups and return cleanup statistics"""
+        try:
+            deleted_count = self.sqlite_ops.cleanup_expired_backups()
+            return {
+                'success': True,
+                'deleted_backups': deleted_count,
+                'message': f"Cleaned up {deleted_count} expired backups"
+            }
+        except Exception as e:
+            logger.error(f"Error cleaning up old backups: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
