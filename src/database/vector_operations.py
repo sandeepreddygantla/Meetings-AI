@@ -44,6 +44,11 @@ class VectorOperations:
                 if isinstance(loaded_index, faiss.IndexIDMap):
                     self.index = loaded_index
                     logger.info(f"Loaded existing FAISS IndexIDMap with {self.index.ntotal} vectors")
+                    
+                    # CRITICAL: Rebuild the ID mappings from database
+                    # Without this, we get "Integer ID not found in reverse mapping" warnings
+                    self._rebuild_id_mappings_from_database()
+                    
                 else:
                     # Convert old IndexFlatIP to IndexIDMap
                     logger.info(f"Converting old FAISS index to IndexIDMap format")
@@ -97,6 +102,67 @@ class VectorOperations:
         
         return int_id
     
+    def _rebuild_id_mappings_from_database(self):
+        """
+        Rebuild the ID mappings from database when FAISS index already exists.
+        This prevents 'Integer ID not found in reverse mapping' warnings.
+        CRITICAL for IIS environment where mappings are lost on restart.
+        """
+        try:
+            db_path = "meeting_documents.db"
+            if not os.path.exists(db_path):
+                logger.error(f"Database not found at {db_path} for rebuilding ID mappings")
+                return
+            
+            logger.info(f"Connecting to database: {db_path}")
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Get all chunk_ids from database with better error handling
+            try:
+                cursor.execute('SELECT DISTINCT chunk_id FROM chunks ORDER BY chunk_id')
+                chunk_ids = [row[0] for row in cursor.fetchall()]
+            except sqlite3.Error as db_error:
+                logger.error(f"Database query failed: {db_error}")
+                conn.close()
+                return
+            
+            conn.close()
+            
+            if not chunk_ids:
+                logger.warning("No chunks found in database for ID mapping rebuild")
+                logger.warning("This means either: 1) No documents uploaded, or 2) Database corruption")
+                return
+            
+            # Clear existing mappings before rebuilding
+            self.chunk_id_to_int_map.clear()
+            self.int_to_chunk_id_map.clear()
+            
+            # Rebuild the mappings using the same hash function
+            logger.info(f"Rebuilding ID mappings for {len(chunk_ids)} chunks...")
+            
+            success_count = 0
+            for chunk_id in chunk_ids:
+                try:
+                    # This will populate both mappings using the same hash function
+                    int_id = self._chunk_id_to_int(chunk_id)
+                    success_count += 1
+                except Exception as chunk_error:
+                    logger.error(f"Failed to map chunk {chunk_id}: {chunk_error}")
+            
+            logger.info(f"Successfully rebuilt ID mappings: {success_count}/{len(chunk_ids)} chunks mapped")
+            logger.info(f"Final mapping counts: chunk->int: {len(self.chunk_id_to_int_map)}, int->chunk: {len(self.int_to_chunk_id_map)}")
+            
+            # Verify mapping consistency
+            if len(self.chunk_id_to_int_map) != len(self.int_to_chunk_id_map):
+                logger.error("WARNING: Mapping size mismatch detected - possible collision issues")
+            
+        except Exception as e:
+            logger.error(f"Critical error rebuilding ID mappings from database: {e}")
+            import traceback
+            logger.error(f"Stack trace: {traceback.format_exc()}")
+            # Continue anyway - the system can still function with warnings
+
     def _get_chunk_int_ids(self, chunk_ids: List[str]) -> List[int]:
         """Convert list of chunk IDs to integer IDs"""
         return [self._chunk_id_to_int(chunk_id) for chunk_id in chunk_ids]
@@ -216,9 +282,25 @@ class VectorOperations:
             List of (chunk_id, similarity_score) tuples
         """
         if self.index.ntotal == 0:
+            logger.warning("FAISS index is empty - no vectors to search")
             return []
         
         try:
+            # Debug logging for IIS troubleshooting
+            logger.info(f"Starting FAISS search: index has {self.index.ntotal} vectors, requesting top {top_k}")
+            logger.info(f"ID mappings available: chunk->int: {len(self.chunk_id_to_int_map)}, int->chunk: {len(self.int_to_chunk_id_map)}")
+            
+            # Check if mappings are empty (critical for IIS environment)
+            if len(self.int_to_chunk_id_map) == 0:
+                logger.error("CRITICAL: int_to_chunk_id_map is empty! Attempting emergency rebuild...")
+                self._rebuild_id_mappings_from_database()
+                
+                if len(self.int_to_chunk_id_map) == 0:
+                    logger.error("Emergency rebuild failed - returning empty results")
+                    return []
+                else:
+                    logger.info(f"Emergency rebuild successful: {len(self.int_to_chunk_id_map)} mappings restored")
+            
             # Normalize query vector
             query_vector = query_embedding.reshape(1, -1).astype('float32')
             faiss.normalize_L2(query_vector)
@@ -226,7 +308,10 @@ class VectorOperations:
             # Search in FAISS IndexIDMap - returns IDs directly
             similarities, ids = self.index.search(query_vector, min(top_k, self.index.ntotal))
             
+            logger.info(f"FAISS returned {len(ids[0])} raw results")
+            
             results = []
+            unmapped_ids = 0
             for i, int_id in enumerate(ids[0]):
                 if int_id != -1:  # -1 indicates no result found
                     # Convert integer ID back to chunk_id
@@ -235,13 +320,28 @@ class VectorOperations:
                         similarity = float(similarities[0][i])
                         results.append((chunk_id, similarity))
                     else:
-                        logger.warning(f"Integer ID {int_id} not found in reverse mapping")
+                        # Count unmapped IDs but don't spam logs
+                        unmapped_ids += 1
             
-            logger.info(f"Vector search returned {len(results)} results from {len(ids[0])} FAISS matches")
+            # Log detailed results for debugging
+            if unmapped_ids > 0:
+                logger.warning(f"Found {unmapped_ids} vectors in FAISS without chunk_id mappings")
+                # Show a few unmapped IDs for debugging
+                sample_unmapped = [int(id_val) for id_val in ids[0] if id_val != -1 and id_val not in self.int_to_chunk_id_map][:3]
+                logger.warning(f"Sample unmapped IDs: {sample_unmapped}")
+            
+            logger.info(f"Final search results: {len(results)} chunks returned from {len(ids[0])} FAISS matches")
+            
+            if len(results) == 0 and len(ids[0]) > 0:
+                logger.error("CRITICAL: FAISS found matches but no chunk_ids could be mapped!")
+                logger.error("This indicates a severe mapping issue in IIS environment")
+            
             return results
             
         except Exception as e:
             logger.error(f"Error searching similar chunks: {e}")
+            import traceback
+            logger.error(f"Stack trace: {traceback.format_exc()}")
             return []
     
     def search_similar_chunks_by_folder(self, query_embedding: np.ndarray, user_id: str, 
@@ -424,3 +524,23 @@ class VectorOperations:
             
         except Exception as e:
             logger.error(f"Error in rebuild_chunk_metadata: {e}")
+    
+    def cleanup_orphaned_vectors(self):
+        """
+        Remove vectors from FAISS that don't have corresponding chunks in database.
+        This is a maintenance operation to clean up stale data.
+        """
+        try:
+            if self.index.ntotal == 0:
+                logger.info("No vectors in FAISS index to clean up")
+                return
+            
+            logger.info(f"Starting orphaned vector cleanup. Current vectors: {self.index.ntotal}")
+            
+            # This is a complex operation for IndexIDMap and requires rebuilding
+            # For now, log the recommendation
+            logger.info("Orphaned vector cleanup requires index rebuild for IndexIDMap")
+            logger.info("Recommendation: Delete vector_index.faiss and restart application to rebuild from database")
+            
+        except Exception as e:
+            logger.error(f"Error in cleanup_orphaned_vectors: {e}")

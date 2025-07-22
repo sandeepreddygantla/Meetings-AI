@@ -13,7 +13,8 @@ Meetings AI is a Flask-based document analysis and chat application that process
 # Main application (current entry point)
 python flask_app.py
 
-# Visit: http://127.0.0.1:2000/meetingsai/
+# Runs on http://127.0.0.1:5000 by default
+# Visit: http://127.0.0.1:5000/meetingsai/
 ```
 
 ### Environment Setup
@@ -27,13 +28,17 @@ venv\Scripts\activate  # Windows
 # Install dependencies
 pip install -r requirements.txt
 
-# Set up environment variables
-# Create .env file with:
+# Create .env file with required variables:
 OPENAI_API_KEY=your_openai_api_key_here
+BASE_PATH=/meetingsai                    # Optional, defaults to /meetingsai
+SECRET_KEY=your-secure-random-key        # Required for Flask sessions
 # OR for Azure:
 # AZURE_CLIENT_ID=your_azure_client_id
 # AZURE_CLIENT_SECRET=your_azure_client_secret  
 # AZURE_PROJECT_ID=your_azure_project_id
+
+# Create tiktoken cache directory (performance optimization)
+mkdir tiktoken_cache
 ```
 
 ### Database Operations
@@ -96,8 +101,14 @@ AzureChatOpenAI(...)
 **Correct pattern:**
 ```python
 # REQUIRED - use global variables
-response = llm.invoke(prompt)
-embeddings = embedding_model.embed_documents(texts)
+# Always check for None before using (globals may be None if API keys missing)
+if llm is not None:
+    response = llm.invoke(prompt)
+else:
+    logger.error("LLM not available - check API key configuration")
+    
+if embedding_model is not None:
+    embeddings = embedding_model.embed_documents(texts)
 ```
 
 ### Environment Switching Protocol
@@ -182,3 +193,32 @@ If enhanced search returns 0 results but basic search works:
 - Verify environment variables are set correctly
 - Check `logs/flask_app.log` for initialization errors
 - Ensure tiktoken cache directory exists and is writable
+
+### Testing
+Currently, no automated tests are configured. The application relies on manual testing and logging for validation.
+
+**Recommended setup for future development:**
+```bash
+# Install testing dependencies
+pip install pytest pytest-flask
+
+# Create tests/ directory structure
+mkdir tests
+mkdir tests/unit tests/integration
+```
+
+### Logging
+The application uses comprehensive logging:
+- **Main app logs**: `logs/flask_app.log`
+- **Processor logs**: `logs/meeting_processor.log`
+- **Console output**: Both file and console logging enabled
+
+**Log levels**: INFO (default), configurable via logging configuration in both entry points.
+
+### Configuration Management
+**Dynamic Base Path**: Set `BASE_PATH` environment variable to change route prefix:
+```bash
+export BASE_PATH=/custom-path  # Changes all routes to /custom-path/*
+```
+
+**Frontend-Backend Sync**: `static/js/config.js` automatically syncs with backend configuration.

@@ -1211,21 +1211,42 @@ class SQLiteOperations:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
+            # Get all necessary fields to reconstruct the path
             cursor.execute('''
-                SELECT filename, folder_path FROM documents 
-                WHERE document_id = ?
+                SELECT d.filename, d.folder_path, u.username, d.project_id, p.project_name
+                FROM documents d
+                LEFT JOIN users u ON d.user_id = u.user_id  
+                LEFT JOIN projects p ON d.project_id = p.project_id
+                WHERE d.document_id = ?
             ''', (document_id,))
             
             result = cursor.fetchone()
             conn.close()
             
             if result:
-                filename, folder_path = result
+                filename, folder_path, username, project_id, project_name = result
+                
+                # If folder_path is available, use it directly
                 if folder_path:
                     return os.path.join(folder_path, filename)
-                else:
-                    # Fallback to default structure if folder_path is None
-                    return filename
+                
+                # Otherwise, reconstruct the path based on the upload structure
+                if username:
+                    # Default structure: meeting_documents/user_{username}/[project_{project_name}/]filename
+                    user_folder = f"meeting_documents/user_{username}"
+                    
+                    if project_id and project_name:
+                        # Clean project name for filesystem
+                        clean_project_name = project_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
+                        clean_project_name = "".join(c for c in clean_project_name if c.isalnum() or c in ("_", "-"))
+                        project_folder = f"project_{clean_project_name}"
+                        return os.path.join(user_folder, project_folder, filename)
+                    else:
+                        return os.path.join(user_folder, filename)
+                
+                # Last resort: just the filename (legacy documents)
+                logger.warning(f"Could not reconstruct full path for document {document_id}, using filename only: {filename}")
+                return filename
             
             return None
             
