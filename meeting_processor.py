@@ -121,9 +121,9 @@ def get_llm(access_token: str = None):
         return ChatOpenAI(
             model="gpt-4o",  # Using GPT-4o model
             openai_api_key=current_api_key,
-            temperature=0,
-            max_tokens=4000,  # Adjust as needed
-            request_timeout=60
+            temperature=0.5,  # Increased for more natural, detailed responses
+            max_tokens=16000,  # Significantly increased for multi-meeting analysis
+            request_timeout=120  # Increased timeout for complex queries
         )
     except Exception as e:
         logger.error(f"Error creating LLM client: {e}")
@@ -3223,8 +3223,127 @@ Return only the date in YYYY-MM-DD format (e.g., 2025-07-14) or "NONE" if no dat
         
         return filters
     
+    def _analyze_context_richness(self, enhanced_results: List[Dict]) -> Dict[str, Any]:
+        """Analyze the richness and quality of available context"""
+        speakers = set()
+        meetings = set()
+        total_content_length = 0
+        decisions_count = 0
+        actions_count = 0
+        time_span_days = 0
+        dates = []
+        
+        for result in enhanced_results:
+            chunk = result['chunk']
+            
+            # Collect content statistics
+            total_content_length += len(chunk.content) if chunk.content else 0
+            
+            # Extract speakers
+            if hasattr(chunk, 'speakers') and chunk.speakers:
+                try:
+                    import json
+                    chunk_speakers = json.loads(chunk.speakers) if isinstance(chunk.speakers, str) else chunk.speakers
+                    speakers.update(chunk_speakers)
+                except:
+                    pass
+            
+            # Extract meetings and dates
+            if hasattr(chunk, 'filename') and chunk.filename:
+                meetings.add(chunk.filename)
+            
+            if hasattr(chunk, 'date') and chunk.date:
+                dates.append(chunk.date)
+            
+            # Count decisions and actions
+            if hasattr(chunk, 'decisions') and chunk.decisions:
+                try:
+                    import json
+                    decisions = json.loads(chunk.decisions) if isinstance(chunk.decisions, str) else chunk.decisions
+                    decisions_count += len(decisions) if decisions else 0
+                except:
+                    pass
+            
+            if hasattr(chunk, 'actions') and chunk.actions:
+                try:
+                    import json
+                    actions = json.loads(chunk.actions) if isinstance(chunk.actions, str) else chunk.actions
+                    actions_count += len(actions) if actions else 0
+                except:
+                    pass
+        
+        # Calculate time span
+        if dates and len(dates) > 1:
+            try:
+                sorted_dates = sorted([d for d in dates if d])
+                if len(sorted_dates) >= 2:
+                    time_span_days = (sorted_dates[-1] - sorted_dates[0]).days
+            except:
+                time_span_days = 0
+        
+        return {
+            'speakers_count': len(speakers),
+            'meetings_count': len(meetings),
+            'total_content_length': total_content_length,
+            'decisions_count': decisions_count,
+            'actions_count': actions_count,
+            'time_span_days': time_span_days,
+            'context_richness_score': min(100, (len(speakers) * 10) + (len(meetings) * 5) + (total_content_length // 100))
+        }
+
+    def _determine_response_requirements(self, query: str, context_analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """Determine dynamic response requirements based on query and context"""
+        query_lower = query.lower()
+        
+        # Base requirements
+        min_words = 200
+        max_words = 800
+        detail_level = "comprehensive"
+        
+        # Adjust based on context richness
+        richness_score = context_analysis['context_richness_score']
+        if richness_score > 75:
+            min_words = 400
+            max_words = 1000
+            detail_level = "extensive"
+        elif richness_score > 40:
+            min_words = 300
+            max_words = 600
+            detail_level = "detailed"
+        
+        # Adjust based on query complexity
+        complex_indicators = ['explain', 'how', 'why', 'process', 'background', 'context', 'detailed', 'comprehensive']
+        technical_indicators = ['technical', 'implementation', 'architecture', 'design', 'algorithm', 'method']
+        timeline_indicators = ['timeline', 'sequence', 'chronological', 'history', 'progression', 'development']
+        
+        if any(indicator in query_lower for indicator in complex_indicators):
+            min_words += 100
+            detail_level = "comprehensive"
+        
+        if any(indicator in query_lower for indicator in technical_indicators):
+            min_words += 150
+            detail_level = "technical_detailed"
+        
+        if any(indicator in query_lower for indicator in timeline_indicators):
+            min_words += 100
+            detail_level = "chronological_detailed"
+        
+        return {
+            'min_words': min_words,
+            'max_words': max_words,
+            'detail_level': detail_level,
+            'context_richness': richness_score
+        }
+
     def _generate_intelligence_response(self, query: str, enhanced_results: List[Dict], user_id: str) -> Tuple[str, str]:
-        """Generate response using enhanced intelligence data"""
+        """Generate comprehensive response using enhanced intelligence data with dynamic scaling"""
+        
+        # Analyze context richness and determine response requirements
+        context_analysis = self._analyze_context_richness(enhanced_results)
+        response_requirements = self._determine_response_requirements(query, context_analysis)
+        
+        logger.info(f"Context analysis: {context_analysis}")
+        logger.info(f"Response requirements: {response_requirements}")
         
         # Prepare comprehensive context from enhanced results
         context_parts = []
