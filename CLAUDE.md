@@ -47,6 +47,16 @@ The application uses SQLite + FAISS hybrid storage. Databases are created automa
 - `vector_index.faiss` - FAISS for semantic embeddings
 - `sessions.db` - Session storage for IIS compatibility
 
+```bash
+# Reset vector database (useful for troubleshooting)
+rm vector_index.faiss
+# Application will rebuild automatically on next start
+
+# Backup databases
+cp meeting_documents.db backups/meeting_documents_$(date +%Y%m%d_%H%M%S).db
+cp sessions.db backups/sessions_$(date +%Y%m%d_%H%M%S).db
+```
+
 ## Architecture Overview
 
 ### Dual Architecture Pattern

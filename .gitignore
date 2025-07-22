@@ -44,3 +44,5 @@ ENVIRONMENT_SETUP.md
 meeting_documents.db
 sessions.db
 src/database/vector_operations.py.backup
+meeting_documents.db
+sessions.db

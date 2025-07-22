@@ -1016,3 +1016,71 @@ class DatabaseManager:
                 'success': False,
                 'error': str(e)
             }
+    
+    # Soft Deletion Methods (Replacement for Hard Deletion)
+    def soft_delete_document(self, document_id: str, user_id: str, deleted_by: str) -> Dict[str, Any]:
+        """Soft delete a document (marks as deleted without removing from FAISS)"""
+        try:
+            success = self.sqlite_ops.soft_delete_document(document_id, user_id, deleted_by)
+            
+            result = {
+                'success': success,
+                'document_id': document_id,
+                'operation': 'soft_delete',
+                'faiss_intact': True,  # FAISS vectors remain untouched
+                'error': None
+            }
+            
+            if success:
+                logger.info(f"Successfully soft-deleted document {document_id} by user {deleted_by}")
+            else:
+                result['error'] = f"Failed to soft-delete document {document_id}"
+                logger.error(result['error'])
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in soft deletion: {e}")
+            return {
+                'success': False,
+                'document_id': document_id,
+                'operation': 'soft_delete',
+                'error': str(e)
+            }
+    
+    def undelete_document(self, document_id: str, user_id: str) -> Dict[str, Any]:
+        """Restore a soft-deleted document"""
+        try:
+            success = self.sqlite_ops.undelete_document(document_id, user_id)
+            
+            result = {
+                'success': success,
+                'document_id': document_id,
+                'operation': 'undelete',
+                'error': None
+            }
+            
+            if success:
+                logger.info(f"Successfully restored document {document_id} for user {user_id}")
+            else:
+                result['error'] = f"Failed to restore document {document_id}"
+                logger.error(result['error'])
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in document restoration: {e}")
+            return {
+                'success': False,
+                'document_id': document_id,
+                'operation': 'undelete',
+                'error': str(e)
+            }
+    
+    def get_soft_deleted_documents(self, user_id: str) -> List[Dict[str, Any]]:
+        """Get all soft-deleted documents for a user"""
+        try:
+            return self.sqlite_ops.get_deleted_documents(user_id)
+        except Exception as e:
+            logger.error(f"Error getting deleted documents: {e}")
+            return []

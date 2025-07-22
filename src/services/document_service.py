@@ -264,13 +264,49 @@ class DocumentService:
                     duplicate_info = self.db_manager.is_file_duplicate(file_hash, filename, user_id)
                     
                     if duplicate_info:
-                        duplicates.append({
-                            'filename': filename,
-                            'original_filename': duplicate_info['original_filename'],
-                            'created_at': duplicate_info['created_at']
-                        })
-                        os.remove(file_path)  # Remove the duplicate file
-                        continue
+                        duplicate_type = duplicate_info.get('duplicate_type', 'active')
+                        
+                        if duplicate_type == 'active':
+                            # Regular duplicate - block upload
+                            duplicates.append({
+                                'filename': filename,
+                                'original_filename': duplicate_info['original_filename'],
+                                'created_at': duplicate_info['created_at'],
+                                'action': 'blocked'
+                            })
+                            os.remove(file_path)  # Remove the duplicate file
+                            continue
+                        
+                        elif duplicate_type == 'soft_deleted_restorable':
+                            # Smart restore - automatically restore the soft-deleted document
+                            logger.info(f"Restoring soft-deleted document {duplicate_info['document_id']} for re-uploaded file {filename}")
+                            
+                            restore_success = self.db_manager.undelete_document(
+                                duplicate_info['document_id'], user_id
+                            )
+                            
+                            if restore_success['success']:
+                                duplicates.append({
+                                    'filename': filename,
+                                    'original_filename': duplicate_info['original_filename'], 
+                                    'created_at': duplicate_info['created_at'],
+                                    'deleted_at': duplicate_info.get('deleted_at'),
+                                    'action': 'restored',
+                                    'document_id': duplicate_info['document_id']
+                                })
+                                os.remove(file_path)  # Remove the new file since we restored the old one
+                                continue
+                            else:
+                                # Restore failed - treat as regular duplicate
+                                logger.warning(f"Failed to restore document {duplicate_info['document_id']}, treating as regular duplicate")
+                                duplicates.append({
+                                    'filename': filename,
+                                    'original_filename': duplicate_info['original_filename'],
+                                    'created_at': duplicate_info['created_at'],
+                                    'action': 'blocked_restore_failed'
+                                })
+                                os.remove(file_path)
+                                continue
                         
                 except Exception as e:
                     logger.error(f"Error checking duplicate for {filename}: {e}")
@@ -380,7 +416,7 @@ class DocumentService:
     # Document Deletion Operations
     def delete_document(self, document_id: str, user_id: str) -> Tuple[bool, str]:
         """
-        Delete a single document completely.
+        Soft delete a single document (safer than hard deletion).
         
         Args:
             document_id: Document ID to delete
@@ -390,25 +426,17 @@ class DocumentService:
             Tuple of (success, message)
         """
         try:
-            logger.info(f"Deleting document {document_id} for user {user_id}")
+            logger.info(f"Soft-deleting document {document_id} for user {user_id}")
             
-            # Perform complete deletion
-            result = self.db_manager.delete_document_complete(document_id, user_id)
+            # Perform soft deletion (marks as deleted, keeps FAISS vectors intact)
+            result = self.db_manager.soft_delete_document(document_id, user_id, user_id)
             
             if result['success']:
-                message = f"Document {document_id} deleted successfully"
+                message = f"Document {document_id} moved to trash successfully"
                 
-                # Add details about what was cleaned up
-                cleanup_details = []
-                if result['filesystem']:
-                    cleanup_details.append("file")
-                if result['sqlite_document']:
-                    cleanup_details.append("database")
-                if result['vectors']:
-                    cleanup_details.append("search index")
-                
-                if cleanup_details:
-                    message += f" (cleaned: {', '.join(cleanup_details)})"
+                # Note about soft deletion
+                if result.get('faiss_intact'):
+                    message += " (document hidden from search, can be restored)"
                 
                 logger.info(message)
                 return True, message
@@ -427,7 +455,7 @@ class DocumentService:
     
     def delete_multiple_documents(self, document_ids: List[str], user_id: str) -> Tuple[bool, Dict[str, Any], str]:
         """
-        Delete multiple documents with detailed results.
+        Soft delete multiple documents with detailed results.
         
         Args:
             document_ids: List of document IDs to delete
@@ -440,10 +468,42 @@ class DocumentService:
             if not document_ids:
                 return False, {}, "No documents provided for deletion"
             
-            logger.info(f"Deleting {len(document_ids)} documents for user {user_id}")
+            logger.info(f"Soft-deleting {len(document_ids)} documents for user {user_id}")
             
-            # Perform batch deletion
-            results = self.db_manager.delete_multiple_documents_complete(document_ids, user_id)
+            # Perform batch soft deletion
+            results = {
+                'success': True,
+                'total_requested': len(document_ids),
+                'successful_deletions': [],
+                'failed_deletions': [],
+                'detailed_results': {}
+            }
+            
+            for doc_id in document_ids:
+                try:
+                    result = self.db_manager.soft_delete_document(doc_id, user_id, user_id)
+                    results['detailed_results'][doc_id] = result
+                    
+                    if result['success']:
+                        results['successful_deletions'].append(doc_id)
+                    else:
+                        results['failed_deletions'].append(doc_id)
+                        
+                except Exception as e:
+                    logger.error(f"Error soft-deleting document {doc_id}: {e}")
+                    results['failed_deletions'].append(doc_id)
+                    results['detailed_results'][doc_id] = {
+                        'success': False,
+                        'error': str(e)
+                    }
+            
+            # Calculate summary
+            results['summary'] = {
+                'total_requested': results['total_requested'],
+                'successful': len(results['successful_deletions']),
+                'failed': len(results['failed_deletions']),
+                'success_rate': len(results['successful_deletions']) / max(1, results['total_requested'])
+            }
             
             summary = results.get('summary', {})
             successful_count = summary.get('successful', 0)
@@ -452,10 +512,10 @@ class DocumentService:
             
             if successful_count > 0:
                 if failed_count == 0:
-                    message = f"Successfully deleted all {successful_count} documents"
+                    message = f"Successfully moved all {successful_count} documents to trash"
                     success = True
                 else:
-                    message = f"Deleted {successful_count} of {total_count} documents ({failed_count} failed)"
+                    message = f"Moved {successful_count} of {total_count} documents to trash ({failed_count} failed)"
                     success = True  # Partial success
             else:
                 message = f"Failed to delete any of the {total_count} documents"

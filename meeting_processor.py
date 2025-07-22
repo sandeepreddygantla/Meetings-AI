@@ -2768,7 +2768,13 @@ Return only the date in YYYY-MM-DD format (e.g., 2025-07-14) or "NONE" if no dat
                 content=chunk_content,
                 start_char=start_char,
                 end_char=end_char,
-                embedding=embedding_array
+                embedding=embedding_array,
+                # Copy essential metadata from document - FIX FOR USER_ID BUG
+                user_id=document.user_id,
+                meeting_id=document.meeting_id,
+                project_id=document.project_id,
+                date=document.date,
+                document_title=document.title
             )
             
             # Add intelligence metadata
@@ -3864,20 +3870,26 @@ Return exactly 4-5 questions, each on a new line, without numbers or bullet poin
             ]
     
     def get_meeting_statistics(self) -> Dict[str, Any]:
-        """Get simplified statistics about processed meetings"""
+        """Get simplified statistics about processed meetings (excluding soft-deleted)"""
         try:
             conn = sqlite3.connect(self.vector_db.db_path)
             cursor = conn.cursor()
             
-            # Get document counts
-            cursor.execute("SELECT COUNT(*) FROM documents")
+            # Get ACTIVE document counts only (exclude soft-deleted)
+            cursor.execute("""
+                SELECT COUNT(*) FROM documents 
+                WHERE is_deleted = FALSE OR is_deleted IS NULL
+            """)
             total_docs = cursor.fetchone()[0]
             
             if total_docs == 0:
                 return {"error": "No documents processed"}
             
-            # Get date range from actual meeting dates in filenames
-            cursor.execute("SELECT filename FROM documents")
+            # Get date range from ACTIVE meeting dates in filenames
+            cursor.execute("""
+                SELECT filename FROM documents 
+                WHERE is_deleted = FALSE OR is_deleted IS NULL
+            """)
             filenames = cursor.fetchall()
             
             meeting_dates = []
@@ -3894,12 +3906,18 @@ Return exactly 4-5 questions, each on a new line, without numbers or bullet poin
                 meeting_dates.sort()
                 date_range = (meeting_dates[0], meeting_dates[-1])
             else:
-                # Fallback to processing dates if no meeting dates found
-                cursor.execute("SELECT MIN(date), MAX(date) FROM documents")
+                # Fallback to processing dates if no meeting dates found (active only)
+                cursor.execute("""
+                    SELECT MIN(date), MAX(date) FROM documents 
+                    WHERE is_deleted = FALSE OR is_deleted IS NULL
+                """)
                 date_range = cursor.fetchone()
             
-            # Get chunk statistics
-            cursor.execute("SELECT COUNT(*), AVG(LENGTH(content)) FROM chunks")
+            # Get ACTIVE chunk statistics only (exclude soft-deleted)
+            cursor.execute("""
+                SELECT COUNT(*), AVG(LENGTH(content)) FROM chunks 
+                WHERE is_deleted = FALSE OR is_deleted IS NULL
+            """)
             chunk_stats = cursor.fetchone()
             
             # Get monthly distribution (optional - can keep for internal tracking)

@@ -366,6 +366,26 @@ class VectorOperations:
                 else:
                     logger.info(f"Emergency rebuild successful: {len(self.int_to_chunk_id_map)} mappings restored")
             
+            # PRODUCTION FIX: Check for mapping mismatch (your exact issue: 711 vs 709)
+            vectors_count = self.index.ntotal
+            mappings_count = len(self.int_to_chunk_id_map)
+            
+            if vectors_count != mappings_count:
+                logger.error(f"PRODUCTION ISSUE DETECTED: {vectors_count} vectors vs {mappings_count} mappings!")
+                logger.error("This is causing all searches to return 0 results in IIS!")
+                logger.info("Attempting emergency synchronization fix...")
+                
+                # Trigger the synchronization fix
+                self._rebuild_id_mappings_from_database()
+                
+                # Verify the fix worked
+                new_mappings_count = len(self.int_to_chunk_id_map)
+                if vectors_count == new_mappings_count:
+                    logger.info(f"SUCCESS: Synchronization fixed! Both now: {vectors_count}")
+                else:
+                    logger.error(f"STILL MISALIGNED: {vectors_count} vectors vs {new_mappings_count} mappings")
+                    logger.error("This will cause search failures - manual intervention needed")
+            
             # Normalize query vector
             query_vector = query_embedding.reshape(1, -1).astype('float32')
             faiss.normalize_L2(query_vector)

@@ -208,23 +208,31 @@ class ChatService:
                     vector_info = comprehensive_stats['vector_index']
                     database_info = comprehensive_stats.get('database', {})
                     
+                    # Get active document and chunk counts (excludes soft-deleted)
+                    active_documents = len(self.db_manager.get_all_documents(user_id))
+                    active_chunks = database_info.get('chunks_count', 0)  # Active chunks only from database
+                    
                     stats = {
-                        # Original format compatibility
-                        'total_meetings': len(self.db_manager.get_all_documents(user_id)),
-                        'total_chunks': vector_info.get('total_vectors', 0),
-                        'vector_index_size': vector_info.get('total_vectors', 0),
+                        # Original format compatibility - use ACTIVE counts for user-facing stats
+                        'total_meetings': active_documents,
+                        'total_chunks': active_chunks,  # Use database count (active only) instead of FAISS count (includes soft-deleted)
+                        'vector_index_size': active_chunks,  # Show active chunks for user display
                         'average_chunk_length': database_info.get('avg_chunk_length', 0),
                         'earliest_meeting': database_info.get('earliest_date'),
                         'latest_meeting': database_info.get('latest_date'),
                         
                         # Additional stats
-                        'document_count': len(self.db_manager.get_all_documents(user_id)),
-                        'vector_count': vector_info.get('total_vectors', 0),
+                        'document_count': active_documents,
+                        'vector_count': vector_info.get('total_vectors', 0),  # Keep actual FAISS count for technical monitoring
                         'index_dimension': vector_info.get('dimension', 0),
                         'index_type': vector_info.get('index_type'),
                         'metadata_entries': vector_info.get('metadata_entries', 0),
                         'project_count': len(self.db_manager.get_user_projects(user_id)),
-                        'meeting_count': len(self.db_manager.get_user_meetings(user_id))
+                        'meeting_count': len(self.db_manager.get_user_meetings(user_id)),
+                        
+                        # Soft deletion monitoring stats (for admin/debugging)
+                        'soft_deleted_documents': database_info.get('documents_soft_deleted', 0),
+                        'soft_deleted_chunks': database_info.get('chunks_soft_deleted', 0)
                     }
                 else:
                     raise Exception("No comprehensive stats available")

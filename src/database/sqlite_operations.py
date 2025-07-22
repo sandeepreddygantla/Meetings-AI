@@ -108,7 +108,7 @@ class SQLiteOperations:
             )
         ''')
         
-        # Create documents table (updated with user context)
+        # Create documents table (updated with user context and soft deletion)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS documents (
                 document_id TEXT PRIMARY KEY,
@@ -127,13 +127,17 @@ class SQLiteOperations:
                 project_id TEXT,
                 folder_path TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_deleted BOOLEAN DEFAULT 0,
+                deleted_at TIMESTAMP NULL,
+                deleted_by TEXT NULL,
                 FOREIGN KEY (user_id) REFERENCES users (user_id),
                 FOREIGN KEY (meeting_id) REFERENCES meetings (meeting_id),
-                FOREIGN KEY (project_id) REFERENCES projects (project_id)
+                FOREIGN KEY (project_id) REFERENCES projects (project_id),
+                FOREIGN KEY (deleted_by) REFERENCES users (user_id)
             )
         ''')
         
-        # Create chunks table (updated with user context)
+        # Create chunks table (updated with user context and soft deletion)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS chunks (
                 chunk_id TEXT PRIMARY KEY,
@@ -147,6 +151,8 @@ class SQLiteOperations:
                 meeting_id TEXT,
                 project_id TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_deleted BOOLEAN DEFAULT 0,
+                deleted_at TIMESTAMP NULL,
                 FOREIGN KEY (document_id) REFERENCES documents (document_id),
                 FOREIGN KEY (user_id) REFERENCES users (user_id),
                 FOREIGN KEY (meeting_id) REFERENCES meetings (meeting_id),
@@ -283,6 +289,21 @@ class SQLiteOperations:
                         cursor.execute(f'ALTER TABLE chunks ADD COLUMN {column} TEXT')
                 logger.info(f"Added {len(missing_intelligence_columns)} intelligence metadata columns")
                 logger.info("Enhanced intelligence migration completed successfully")
+            
+            # Soft deletion migration for documents table
+            if 'is_deleted' not in columns:
+                logger.info("Adding soft deletion columns to documents table...")
+                cursor.execute('ALTER TABLE documents ADD COLUMN is_deleted BOOLEAN DEFAULT 0')
+                cursor.execute('ALTER TABLE documents ADD COLUMN deleted_at TIMESTAMP NULL')
+                cursor.execute('ALTER TABLE documents ADD COLUMN deleted_by TEXT NULL')
+                logger.info("Documents table soft deletion migration completed")
+            
+            # Soft deletion migration for chunks table
+            if 'is_deleted' not in chunk_columns:
+                logger.info("Adding soft deletion columns to chunks table...")
+                cursor.execute('ALTER TABLE chunks ADD COLUMN is_deleted BOOLEAN DEFAULT 0')
+                cursor.execute('ALTER TABLE chunks ADD COLUMN deleted_at TIMESTAMP NULL')
+                logger.info("Chunks table soft deletion migration completed")
                 
         except sqlite3.OperationalError as e:
             # Tables might not exist yet, that's okay
@@ -401,6 +422,8 @@ class SQLiteOperations:
                 FROM chunks c
                 LEFT JOIN documents d ON c.document_id = d.document_id
                 WHERE c.chunk_id IN ({placeholders})
+                  AND (c.is_deleted = 0 OR c.is_deleted IS NULL)
+                  AND (d.is_deleted = 0 OR d.is_deleted IS NULL)
                 ORDER BY c.document_id, c.chunk_index
             ''', chunk_ids)
             
@@ -552,7 +575,7 @@ class SQLiteOperations:
             return []
     
     def get_all_documents(self, user_id: str = None) -> List[Dict[str, Any]]:
-        """Get all documents with metadata for document selection"""
+        """Get all documents with metadata for document selection (excludes soft-deleted)"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -562,7 +585,7 @@ class SQLiteOperations:
                     SELECT document_id, filename, date, title, content_summary,
                            chunk_count, file_size, user_id, project_id, meeting_id, folder_path
                     FROM documents 
-                    WHERE user_id = ?
+                    WHERE user_id = ? AND (is_deleted = 0 OR is_deleted IS NULL)
                     ORDER BY date DESC, filename
                 ''', (user_id,))
             else:
@@ -570,6 +593,7 @@ class SQLiteOperations:
                     SELECT document_id, filename, date, title, content_summary,
                            chunk_count, file_size, user_id, project_id, meeting_id, folder_path
                     FROM documents 
+                    WHERE (is_deleted = 0 OR is_deleted IS NULL)
                     ORDER BY date DESC, filename
                 ''')
             
@@ -971,30 +995,64 @@ class SQLiteOperations:
             return ""
     
     def is_file_duplicate(self, file_hash: str, filename: str, user_id: str) -> Optional[Dict]:
-        """Check if file is a duplicate based on hash and return original file info"""
+        """Check if file is a duplicate and return info about existing file"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
+            # First check for non-deleted duplicates
             cursor.execute('''
-                SELECT fh.original_filename, fh.created_at, d.document_id, d.filename as stored_filename
+                SELECT fh.original_filename, fh.created_at, d.document_id, d.filename as stored_filename,
+                       d.is_deleted
                 FROM file_hashes fh
                 LEFT JOIN documents d ON fh.document_id = d.document_id
-                WHERE fh.file_hash = ? AND fh.user_id = ?
+                WHERE fh.file_hash = ? AND fh.user_id = ? 
+                  AND (d.is_deleted = 0 OR d.is_deleted IS NULL)
                 ORDER BY fh.created_at DESC
                 LIMIT 1
             ''', (file_hash, user_id))
             
             result = cursor.fetchone()
-            conn.close()
             
             if result:
+                # Found non-deleted duplicate
+                conn.close()
                 return {
                     'original_filename': result[0],
-                    'upload_date': result[1],
+                    'created_at': result[1],
                     'document_id': result[2],
-                    'stored_filename': result[3]
+                    'stored_filename': result[3],
+                    'is_deleted': False,
+                    'duplicate_type': 'active'
                 }
+            
+            # Check for soft-deleted duplicates
+            cursor.execute('''
+                SELECT fh.original_filename, fh.created_at, d.document_id, d.filename as stored_filename,
+                       d.is_deleted, d.deleted_at
+                FROM file_hashes fh
+                LEFT JOIN documents d ON fh.document_id = d.document_id
+                WHERE fh.file_hash = ? AND fh.user_id = ? 
+                  AND d.is_deleted = 1
+                ORDER BY fh.created_at DESC
+                LIMIT 1
+            ''', (file_hash, user_id))
+            
+            deleted_result = cursor.fetchone()
+            conn.close()
+            
+            if deleted_result:
+                # Found soft-deleted duplicate - can be restored
+                return {
+                    'original_filename': deleted_result[0],
+                    'created_at': deleted_result[1],
+                    'document_id': deleted_result[2],
+                    'stored_filename': deleted_result[3],
+                    'is_deleted': True,
+                    'deleted_at': deleted_result[5],
+                    'duplicate_type': 'soft_deleted_restorable'
+                }
+            
             return None
             
         except Exception as e:
@@ -1171,7 +1229,7 @@ class SQLiteOperations:
             logger.error(f"Error updating job status: {e}")
     
     def get_database_stats(self) -> Dict[str, Any]:
-        """Get database statistics"""
+        """Get database statistics (excluding soft-deleted documents and chunks)"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -1179,23 +1237,45 @@ class SQLiteOperations:
             # Get counts from all tables
             stats = {}
             
-            tables = ['users', 'projects', 'meetings', 'documents', 'chunks', 
-                     'user_sessions', 'file_hashes', 'upload_jobs']
+            # Count regular tables (no soft deletion filtering needed)
+            regular_tables = ['users', 'projects', 'meetings', 'user_sessions', 'file_hashes', 'upload_jobs']
             
-            for table in tables:
+            for table in regular_tables:
                 cursor.execute(f'SELECT COUNT(*) FROM {table}')
                 stats[f'{table}_count'] = cursor.fetchone()[0]
+            
+            # Count ACTIVE documents only (exclude soft-deleted)
+            cursor.execute('''
+                SELECT COUNT(*) FROM documents 
+                WHERE is_deleted = FALSE OR is_deleted IS NULL
+            ''')
+            stats['documents_count'] = cursor.fetchone()[0]
+            
+            # Count ACTIVE chunks only (exclude soft-deleted)
+            cursor.execute('''
+                SELECT COUNT(*) FROM chunks 
+                WHERE is_deleted = FALSE OR is_deleted IS NULL
+            ''')
+            stats['chunks_count'] = cursor.fetchone()[0]
             
             # Get active sessions count
             cursor.execute('SELECT COUNT(*) FROM user_sessions WHERE is_active = TRUE')
             stats['active_sessions'] = cursor.fetchone()[0]
             
-            # Get recent activity (documents uploaded in last 24 hours)
+            # Get recent activity (ACTIVE documents uploaded in last 24 hours)
             cursor.execute('''
                 SELECT COUNT(*) FROM documents 
                 WHERE created_at > datetime('now', '-1 day')
+                AND (is_deleted = FALSE OR is_deleted IS NULL)
             ''')
             stats['documents_last_24h'] = cursor.fetchone()[0]
+            
+            # Add soft deletion statistics for monitoring
+            cursor.execute('SELECT COUNT(*) FROM documents WHERE is_deleted = TRUE')
+            stats['documents_soft_deleted'] = cursor.fetchone()[0]
+            
+            cursor.execute('SELECT COUNT(*) FROM chunks WHERE is_deleted = TRUE')
+            stats['chunks_soft_deleted'] = cursor.fetchone()[0]
             
             conn.close()
             return stats
@@ -1595,4 +1675,146 @@ class SQLiteOperations:
             
         except Exception as e:
             logger.error(f"Error getting deletion audit logs: {e}")
+            return []
+    
+    def soft_delete_document(self, document_id: str, user_id: str, deleted_by: str) -> bool:
+        """Soft delete a document and all its chunks"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            current_time = datetime.now()
+            
+            # Verify document belongs to user
+            cursor.execute('''
+                SELECT COUNT(*) FROM documents 
+                WHERE document_id = ? AND user_id = ? AND (is_deleted = 0 OR is_deleted IS NULL)
+            ''', (document_id, user_id))
+            
+            if cursor.fetchone()[0] == 0:
+                logger.warning(f"Document {document_id} not found or already deleted for user {user_id}")
+                return False
+            
+            # Soft delete the document
+            cursor.execute('''
+                UPDATE documents 
+                SET is_deleted = 1, deleted_at = ?, deleted_by = ?
+                WHERE document_id = ? AND user_id = ?
+            ''', (current_time, deleted_by, document_id, user_id))
+            
+            # Soft delete all associated chunks
+            cursor.execute('''
+                UPDATE chunks 
+                SET is_deleted = 1, deleted_at = ?
+                WHERE document_id = ?
+            ''', (current_time, document_id))
+            
+            rows_affected = cursor.rowcount
+            conn.commit()
+            
+            logger.info(f"Successfully soft-deleted document {document_id} and {rows_affected} chunks")
+            return True
+            
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error soft-deleting document {document_id}: {e}")
+            return False
+        finally:
+            conn.close()
+    
+    def undelete_document(self, document_id: str, user_id: str) -> bool:
+        """Restore a soft-deleted document and all its chunks"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            # Verify document belongs to user and is deleted
+            cursor.execute('''
+                SELECT COUNT(*) FROM documents 
+                WHERE document_id = ? AND user_id = ? AND is_deleted = 1
+            ''', (document_id, user_id))
+            
+            if cursor.fetchone()[0] == 0:
+                logger.warning(f"Document {document_id} not found or not deleted for user {user_id}")
+                return False
+            
+            # Restore the document
+            cursor.execute('''
+                UPDATE documents 
+                SET is_deleted = 0, deleted_at = NULL, deleted_by = NULL
+                WHERE document_id = ? AND user_id = ?
+            ''', (document_id, user_id))
+            
+            # Restore all associated chunks
+            cursor.execute('''
+                UPDATE chunks 
+                SET is_deleted = 0, deleted_at = NULL
+                WHERE document_id = ?
+            ''', (document_id,))
+            
+            rows_affected = cursor.rowcount
+            conn.commit()
+            
+            logger.info(f"Successfully restored document {document_id} and {rows_affected} chunks")
+            return True
+            
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error restoring document {document_id}: {e}")
+            return False
+        finally:
+            conn.close()
+    
+    def get_deleted_documents(self, user_id: str = None) -> List[Dict[str, Any]]:
+        """Get all soft-deleted documents (for admin/recovery purposes)"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            if user_id:
+                cursor.execute('''
+                    SELECT document_id, filename, date, title, content_summary,
+                           chunk_count, file_size, user_id, project_id, meeting_id, 
+                           folder_path, deleted_at, deleted_by
+                    FROM documents 
+                    WHERE user_id = ? AND is_deleted = 1
+                    ORDER BY deleted_at DESC, filename
+                ''', (user_id,))
+            else:
+                cursor.execute('''
+                    SELECT document_id, filename, date, title, content_summary,
+                           chunk_count, file_size, user_id, project_id, meeting_id, 
+                           folder_path, deleted_at, deleted_by
+                    FROM documents 
+                    WHERE is_deleted = 1
+                    ORDER BY deleted_at DESC, filename
+                ''')
+            
+            results = cursor.fetchall()
+            conn.close()
+            
+            # Convert to dictionaries
+            documents = []
+            for row in results:
+                doc = {
+                    'document_id': row[0],
+                    'filename': row[1],
+                    'date': row[2],
+                    'title': row[3] or 'Untitled',
+                    'content_summary': row[4] or '',
+                    'chunk_count': row[5] or 0,
+                    'file_size': row[6] or 0,
+                    'user_id': row[7],
+                    'project_id': row[8],
+                    'meeting_id': row[9],
+                    'folder_path': row[10],
+                    'deleted_at': row[11],
+                    'deleted_by': row[12]
+                }
+                documents.append(doc)
+            
+            return documents
+            
+        except Exception as e:
+            logger.error(f"Error getting deleted documents: {e}")
             return []
