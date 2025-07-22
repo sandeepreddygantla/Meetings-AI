@@ -53,21 +53,47 @@ class ChatService:
             Tuple of (response, follow_up_questions, timestamp)
         """
         try:
+            # ===== DEBUG LOGGING: CHAT SERVICE ENTRY =====
+            logger.info("[SERVICE] ChatService.process_chat_query() - ENTRY POINT")
+            logger.info(f"[PARAMS] Parameters received:")
+            logger.info(f"   - message: '{message}'")
+            logger.info(f"   - user_id: {user_id}")
+            logger.info(f"   - document_ids: {document_ids}")
+            logger.info(f"   - project_id: {project_id}")
+            logger.info(f"   - project_ids: {project_ids}")
+            logger.info(f"   - meeting_ids: {meeting_ids}")
+            logger.info(f"   - date_filters: {date_filters}")
+            logger.info(f"   - folder_path: {folder_path}")
+            
             # Check if documents are available
+            logger.info("[STEP1] Checking vector database status...")
             try:
-                vector_size = self.db_manager.get_index_stats().get('total_vectors', 0)
+                index_stats = self.db_manager.get_index_stats()
+                vector_size = index_stats.get('total_vectors', 0)
+                logger.info(f"[STATS] Vector database stats: {index_stats}")
             except Exception as e:
-                logger.error(f"Error checking vector database: {e}")
+                logger.error(f"[ERROR] Error checking vector database: {e}")
                 vector_size = 0
             
+            logger.info(f"[VECTORS] Total vectors available: {vector_size}")
+            
             if vector_size == 0:
-                response = "I don't have any documents to analyze yet. Please upload some meeting documents first! 📁"
+                logger.warning("[WARNING] NO VECTORS FOUND - Returning 'no documents' response")
+                response = "I don't have any documents to analyze yet. Please upload some meeting documents first!"
                 follow_up_questions = []
             else:
+                logger.info("[OK] Vectors available - proceeding with query processing")
+                
                 # Process query using existing processor logic
+                if self.processor:
+                    logger.info("[PROCESSOR] Using processor for query processing")
+                else:
+                    logger.error("[ERROR] No processor available!")
+                    
                 if self.processor:
                     try:
                         # Combine project filters
+                        logger.info("[STEP2] Processing project filters...")
                         combined_project_ids = []
                         if project_id:
                             combined_project_ids.append(project_id)
@@ -75,13 +101,26 @@ class ChatService:
                             combined_project_ids.extend(project_ids)
                         final_project_id = combined_project_ids[0] if combined_project_ids else None
                         
-                        # Debug logging
-                        logger.info(f"Chat query filters - project_id: {project_id}, project_ids: {project_ids}, final_project_id: {final_project_id}")
-                        logger.info(f"Other filters - document_ids: {document_ids}, meeting_ids: {meeting_ids}, folder_path: {folder_path}")
+                        logger.info(f"[FILTERS] Filter processing results:")
+                        logger.info(f"   - Original project_id: {project_id}")
+                        logger.info(f"   - Original project_ids: {project_ids}")
+                        logger.info(f"   - Final project_id: {final_project_id}")
+                        logger.info(f"   - document_ids: {document_ids}")
+                        logger.info(f"   - meeting_ids: {meeting_ids}")
+                        logger.info(f"   - folder_path: {folder_path}")
                         
                         # Detect if this is a summary query to use enhanced context
+                        logger.info("[STEP3] Detecting query type...")
                         is_summary_query = self.processor.detect_summary_query(message)
                         context_limit = 100 if is_summary_query else 50
+                        logger.info(f"[QUERY] Query type analysis:")
+                        logger.info(f"   - Is summary query: {is_summary_query}")
+                        logger.info(f"   - Context limit: {context_limit}")
+                        
+                        # THE MAIN PROCESSING CALL
+                        logger.info("[STEP4] Calling processor.answer_query_with_intelligence()...")
+                        logger.info("   -> This is where the REAL processing happens!")
+                        logger.info("   -> Vector search, SQLite queries, LLM generation all occur here")
                         
                         response, context = self.processor.answer_query_with_intelligence(
                             message, 
@@ -95,14 +134,30 @@ class ChatService:
                             include_context=True
                         )
                         
-                        logger.info(f"Chat service received response from processor. Length: {len(response)} characters")
-                        logger.info(f"Response preview: {response[:100]}..." if response else "Response is empty!")
+                        # ===== DEBUG LOGGING: PROCESSOR RESPONSE =====
+                        logger.info("[RESULT] PROCESSOR RESPONSE RECEIVED")
+                        logger.info(f"[RESPONSE] Response length: {len(response)} characters")
+                        logger.info(f"[CONTEXT] Context chunks received: {len(context) if context else 0}")
+                        if response:
+                            logger.info(f"[PREVIEW] Response preview (first 200 chars): '{response[:200]}...'")
+                        else:
+                            logger.error("[CRITICAL] Processor returned empty response!")
+                        
+                        # Check for problematic responses
+                        if "no relevant information" in response.lower():
+                            logger.error("[ALERT] DETECTED: Processor returned 'no relevant information' - search pipeline failed!")
+                        elif "couldn't find" in response.lower():
+                            logger.error("[ALERT] DETECTED: Processor returned 'couldn't find' - search pipeline failed!")
+                        else:
+                            logger.info("[SUCCESS] Response appears to contain relevant information")
                         
                         # Generate follow-up questions
+                        logger.info("[STEP5] Generating follow-up questions...")
                         try:
                             follow_up_questions = self.processor.generate_follow_up_questions(message, response, context)
+                            logger.info(f"[FOLLOWUP] Generated {len(follow_up_questions)} follow-up questions")
                         except Exception as follow_up_error:
-                            logger.error(f"Error generating follow-up questions: {follow_up_error}")
+                            logger.error(f"[ERROR] Error generating follow-up questions: {follow_up_error}")
                             follow_up_questions = []
                             
                     except Exception as e:

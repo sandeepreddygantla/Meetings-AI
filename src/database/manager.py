@@ -144,48 +144,110 @@ class DatabaseManager:
             List of enhanced search results with metadata
         """
         try:
+            # ===== DEBUG LOGGING: ENHANCED SEARCH ENTRY =====
+            logger.info("[STEP] DatabaseManager.enhanced_search_with_metadata() - ENTRY POINT")
+            logger.info(f"[PARAMS] Parameters:")
+            logger.info(f"   - user_id: '{user_id}'")
+            logger.info(f"   - filters: {filters}")
+            logger.info(f"   - top_k: {top_k}")
+            logger.info(f"   - query_embedding shape: {query_embedding.shape}")
+            
             # Get initial vector search results
+            logger.info(f"[STEP] Step 1: Calling vector search for {top_k * 2} results...")
             vector_results = self.search_similar_chunks(query_embedding, top_k * 2)
             
+            logger.info(f"[STATS] Vector search returned: {len(vector_results) if vector_results else 0} raw results")
+            
             if not vector_results:
+                logger.error("[ERROR] VECTOR SEARCH RETURNED ZERO RESULTS!")
+                logger.error("   -> This means FAISS search itself is failing")
+                logger.error("   -> Check FAISS index and ID mappings")
                 return []
             
             # Get chunk data from SQLite
+            logger.info("[STEP] Step 2: Converting vector results to chunk data...")
             chunk_ids = [chunk_id for chunk_id, _ in vector_results]
-            logger.info(f"Vector search returned chunk IDs: {chunk_ids[:5]}...") # Show first 5 IDs
+            logger.info(f"[LIST] Chunk IDs from vector search: {chunk_ids[:5]}... (showing first 5 of {len(chunk_ids)})")
+            
             chunks = self.get_chunks_by_ids(chunk_ids)
-            logger.info(f"Retrieved {len(chunks)} chunks from database for {len(chunk_ids)} chunk IDs")
+            logger.info(f"[DATA] Retrieved {len(chunks) if chunks else 0} chunks from SQLite for {len(chunk_ids)} chunk IDs")
+            
+            if not chunks:
+                logger.error("[ERROR] NO CHUNKS RETRIEVED FROM DATABASE!")
+                logger.error("   -> Vector search found chunk IDs but SQLite returned no data")
+                logger.error("   -> This indicates database sync issues")
+                return []
             
             # Debug: Check user IDs in chunks
-            chunk_user_ids = set(chunk.user_id for chunk in chunks)
-            logger.info(f"Chunk user IDs found: {chunk_user_ids}")
-            logger.info(f"Query user ID: '{user_id}'")
+            logger.info("[STEP] Step 3: Analyzing user ID filtering...")
+            chunk_user_ids = set(chunk.user_id for chunk in chunks if hasattr(chunk, 'user_id'))
+            logger.info(f"[USERS] User IDs found in chunks: {chunk_user_ids}")
+            logger.info(f"[USER] Query user ID: '{user_id}'")
             
             # Create results with scores
+            logger.info("[STEP] Step 4: Applying user ID filtering...")
             enhanced_results = []
             score_map = {chunk_id: score for chunk_id, score in vector_results}
             
+            user_filter_passed = 0
+            user_filter_failed = 0
+            
             for chunk in chunks:
-                logger.debug(f"Checking chunk {chunk.chunk_id}: chunk.user_id='{chunk.user_id}', query user_id='{user_id}'")
-                if chunk.user_id == user_id or user_id is None or chunk.user_id is None:
+                chunk_user_id = getattr(chunk, 'user_id', None)
+                passes_filter = (chunk_user_id == user_id or user_id is None or chunk_user_id is None)
+                
+                if passes_filter:
                     result = {
                         'chunk': chunk,
-                        'similarity_score': score_map.get(chunk.chunk_id, 0.0),
+                        'similarity_score': score_map.get(getattr(chunk, 'chunk_id', ''), 0.0),
                         'context': self._reconstruct_chunk_context(chunk)
                     }
                     enhanced_results.append(result)
+                    user_filter_passed += 1
                 else:
-                    logger.debug(f"Chunk {chunk.chunk_id} filtered out due to user_id mismatch")
+                    user_filter_failed += 1
             
-            logger.info(f"Enhanced search: {len(enhanced_results)} chunks passed user_id filter (query user_id: '{user_id}')")
+            logger.info(f"[STATS] User ID filtering results:")
+            logger.info(f"   - Passed: {user_filter_passed} chunks")
+            logger.info(f"   - Filtered out: {user_filter_failed} chunks")
+            logger.info(f"   - Total processed: {len(chunks)} chunks")
             
             # Apply metadata filters if provided
             if filters:
+                logger.info(f"[STEP] Step 5: Applying metadata filters: {filters}")
+                results_before_metadata = len(enhanced_results)
                 enhanced_results = self._apply_metadata_filters(enhanced_results, filters, user_id)
+                results_after_metadata = len(enhanced_results)
+                logger.info(f"[STATS] Metadata filtering: {results_before_metadata} -> {results_after_metadata} chunks")
+                
+                if results_after_metadata == 0 and results_before_metadata > 0:
+                    logger.error("[ERROR] METADATA FILTERS ELIMINATED ALL RESULTS!")
+                    logger.error("   -> This is likely the cause of 'no relevant information' responses")
+                    logger.error(f"   -> Problematic filters: {filters}")
+            else:
+                logger.info("[STEP] Step 5: No metadata filters to apply")
             
             # Sort by similarity score and limit results
+            logger.info("[STEP] Step 6: Sorting and limiting results...")
             enhanced_results.sort(key=lambda x: x['similarity_score'], reverse=True)
-            return enhanced_results[:top_k]
+            final_results = enhanced_results[:top_k]
+            
+            logger.info(f"[STATS] FINAL ENHANCED SEARCH RESULTS:")
+            logger.info(f"   - Total results before limit: {len(enhanced_results)}")
+            logger.info(f"   - Final results returned: {len(final_results)}")
+            
+            if final_results:
+                logger.info("[SUCCESS] Enhanced search successful!")
+                # Show top 3 results for debugging
+                for i, result in enumerate(final_results[:3]):
+                    chunk = result.get('chunk', {})
+                    score = result.get('similarity_score', 0.0)
+                    chunk_id = getattr(chunk, 'chunk_id', 'unknown') if hasattr(chunk, 'chunk_id') else chunk.get('chunk_id', 'unknown')
+                    logger.info(f"   Result {i+1}: Chunk {chunk_id}, Score: {score:.4f}")
+            else:
+                logger.error("[ERROR] ENHANCED SEARCH RETURNED ZERO FINAL RESULTS!")
+            
+            return final_results
             
         except Exception as e:
             logger.error(f"Error in enhanced search: {e}")

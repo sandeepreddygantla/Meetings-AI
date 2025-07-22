@@ -2967,13 +2967,22 @@ Return only the date in YYYY-MM-DD format (e.g., 2025-07-14) or "NONE" if no dat
         
         return "\n".join(enhanced_parts)
     
-    def process_documents(self, document_folder: str) -> None:
-        """Process all documents in a folder with chunking and vector storage"""
+    def process_documents(self, document_folder: str, user_id: str = "default_user", project_id: str = None) -> Dict[str, Any]:
+        """Process all documents in a folder with chunking and vector storage
+        
+        Args:
+            document_folder: Path to folder containing documents
+            user_id: User ID for document ownership (defaults to 'default_user')
+            project_id: Optional project ID for document categorization
+            
+        Returns:
+            Dictionary with processing results and statistics
+        """
         folder_path = Path(document_folder)
         
         if not folder_path.exists():
             logger.error(f"Folder {document_folder} does not exist")
-            return
+            return {"success": False, "error": f"Folder {document_folder} does not exist", "processed_count": 0}
         
         # Get supported files
         supported_extensions = ['.docx', '.txt', '.pdf']
@@ -2994,7 +3003,7 @@ Return only the date in YYYY-MM-DD format (e.g., 2025-07-14) or "NONE" if no dat
                     continue
                 
                 # Parse document
-                meeting_doc = self.parse_document_content(content, doc_file.name)
+                meeting_doc = self.parse_document_content(content, doc_file.name, user_id, project_id)
                 
                 # Create chunks with embeddings
                 logger.info(f"Creating chunks for {doc_file.name}")
@@ -3013,6 +3022,14 @@ Return only the date in YYYY-MM-DD format (e.g., 2025-07-14) or "NONE" if no dat
         if processed_count > 0:
             self.vector_db.save_index()
             logger.info(f"Successfully processed {processed_count} documents")
+        
+        return {
+            "success": processed_count > 0,
+            "processed_count": processed_count,
+            "total_files": len(doc_files),
+            "user_id": user_id,
+            "project_id": project_id
+        }
     
     def hybrid_search(self, query: str, user_id: str, project_id: str = None, meeting_id: str = None, folder_path: str = None, top_k: int = 15, semantic_weight: float = 0.7) -> List[DocumentChunk]:
         """Perform hybrid search combining semantic and keyword search"""
@@ -3084,18 +3101,41 @@ Return only the date in YYYY-MM-DD format (e.g., 2025-07-14) or "NONE" if no dat
         """Answer user query using enhanced intelligence-aware search and context reconstruction"""
         
         try:
+            # ===== DEBUG LOGGING: MAIN PROCESSOR ENTRY =====
+            logger.info("[PROCESSOR] MeetingProcessor.answer_query_with_intelligence() - ENTRY POINT")
+            logger.info("=" * 80)
+            logger.info(f"[PROCESSING] QUERY: '{query}'")
+            logger.info(f"[USER] User ID: {user_id}")
+            logger.info(f"[PARAMS] Parameters:")
+            logger.info(f"   - document_ids: {document_ids}")
+            logger.info(f"   - project_id: {project_id}")
+            logger.info(f"   - meeting_id: {meeting_id}")
+            logger.info(f"   - meeting_ids: {meeting_ids}")
+            logger.info(f"   - date_filters: {date_filters}")
+            logger.info(f"   - folder_path: {folder_path}")
+            logger.info(f"   - context_limit: {context_limit}")
+            logger.info("=" * 80)
+            
             # Generate query embedding
+            logger.info("[STEPA] Checking embedding model availability...")
             if self.embedding_model is None:
-                logger.error("Embedding model not available")
+                logger.error("[CRITICAL] Embedding model not available")
                 return "Sorry, the system is not properly configured for queries.", ""
             
+            logger.info("[OK] Embedding model available - generating query embedding...")
             query_embedding = self.embedding_model.embed_query(query)
             query_vector = np.array(query_embedding)
+            logger.info(f"[EMBEDDING] Query embedding generated: {query_vector.shape} dimensions")
             
             # Analyze query to determine filters
+            logger.info("[STEPB] Analyzing query for automatic filters...")
             search_filters = self._analyze_query_for_filters(query)
+            logger.info(f"[AUTO] Automatic filters detected: {search_filters}")
             
             # Apply user context filters
+            logger.info("[STEPC] Applying user-provided filters...")
+            original_filters = dict(search_filters)  # Keep copy for comparison
+            
             if meeting_ids:
                 search_filters['meeting_ids'] = meeting_ids
             if project_id:
@@ -3105,30 +3145,74 @@ Return only the date in YYYY-MM-DD format (e.g., 2025-07-14) or "NONE" if no dat
             if folder_path:
                 search_filters['folder_path'] = folder_path
             
+            logger.info(f"[FILTERS] Filter combination:")
+            logger.info(f"   - Automatic filters: {original_filters}")
+            logger.info(f"   - Final filters: {search_filters}")
+            
             # Perform enhanced search with metadata filtering
+            logger.info("[STEPD] Starting ENHANCED SEARCH with metadata filtering...")
+            logger.info(f"   -> Calling vector_db.enhanced_search_with_metadata()")
+            logger.info(f"   -> Query vector shape: {query_vector.shape}")
+            logger.info(f"   -> User ID: {user_id}")
+            logger.info(f"   -> Filters: {search_filters}")
+            logger.info(f"   -> Top K: {context_limit}")
+            
             enhanced_results = self.vector_db.enhanced_search_with_metadata(
                 query_vector, user_id, search_filters, top_k=context_limit
             )
             
-            logger.info(f"Enhanced search returned {len(enhanced_results) if enhanced_results else 0} results")
-            logger.info(f"Search filters applied: {search_filters}")
+            # ===== DEBUG LOGGING: ENHANCED SEARCH RESULTS =====
+            logger.info("[RESULTS] ENHANCED SEARCH RESULTS ANALYSIS")
+            logger.info(f"[COUNT] Enhanced search returned: {len(enhanced_results) if enhanced_results else 0} results")
+            if enhanced_results:
+                logger.info(f"[SAMPLE] Sample results (first 3):")
+                for i, result in enumerate(enhanced_results[:3]):
+                    if isinstance(result, dict):
+                        chunk = result.get('chunk', {})
+                        score = result.get('similarity_score', 0.0)
+                        chunk_id = chunk.get('chunk_id', 'unknown') if isinstance(chunk, dict) else 'unknown'
+                        logger.info(f"   {i+1}. Chunk ID: {chunk_id}, Score: {score:.4f}")
+                    else:
+                        logger.info(f"   {i+1}. Result: {type(result)} - {str(result)[:100]}...")
+            else:
+                logger.error("[ERROR] ENHANCED SEARCH RETURNED ZERO RESULTS!")
+                logger.error("   -> This is the root cause of 'no relevant information' responses!")
+            
+            logger.info(f"[APPLIED] Search filters that were applied: {search_filters}")
             
             if not enhanced_results:
-                logger.warning("Enhanced search returned no results - falling back to basic search")
+                logger.warning("[FALLBACK] TRIGGERED: Enhanced search returned no results")
+                logger.warning("   -> Starting BASIC SEARCH without metadata filters...")
+                
                 # Fallback to basic search without metadata filters
                 try:
+                    logger.info("[STEP E: BASIC SEARCH FALLBACK")
+                    logger.info("   -> Calling vector_db.search_similar_chunks() (no filters)")
+                    
                     basic_results = self.vector_db.search_similar_chunks(query_vector, top_k=context_limit)
+                    
+                    logger.info(f"[STATS] Basic search returned: {len(basic_results) if basic_results else 0} raw results")
+                    
                     if basic_results:
-                        chunks = self.vector_db.get_chunks_by_ids([chunk_id for chunk_id, _ in basic_results])
+                        logger.info("[STEP F: Converting basic results to chunks...")
+                        chunk_ids = [chunk_id for chunk_id, _ in basic_results]
+                        logger.info(f"📋 Chunk IDs from basic search: {chunk_ids[:3]}... (showing first 3)")
+                        
+                        chunks = self.vector_db.get_chunks_by_ids(chunk_ids)
+                        
+                        logger.info(f"📄 Retrieved {len(chunks) if chunks else 0} chunks from database")
+                        
                         if chunks:
-                            logger.info(f"Basic search fallback returned {len(chunks)} chunks")
+                            logger.info("[OK] Basic search fallback successful - converting to enhanced format")
+                            
                             # Convert to enhanced format for compatibility
                             score_map = {chunk_id: score for chunk_id, score in basic_results}
                             enhanced_format = []
-                            for chunk in chunks:
+                            
+                            for i, chunk in enumerate(chunks):
                                 # Handle case where chunk might be a string or dict instead of object
                                 if isinstance(chunk, str):
-                                    logger.error(f"Unexpected string chunk in fallback: {chunk}")
+                                    logger.error(f"[ERROR] Unexpected string chunk in fallback: {chunk}")
                                     continue
                                 elif isinstance(chunk, dict):
                                     chunk_id = chunk.get('chunk_id', '')
@@ -3137,23 +3221,46 @@ Return only the date in YYYY-MM-DD format (e.g., 2025-07-14) or "NONE" if no dat
                                         'similarity_score': score_map.get(chunk_id, 0.0),
                                         'context': ''
                                     })
+                                    if i < 2:  # Log first 2 chunks
+                                        logger.info(f"   Chunk {i+1}: ID={chunk_id}, Score={score_map.get(chunk_id, 0.0):.4f}")
                                 else:
                                     # Assume it's a proper chunk object
+                                    chunk_id = getattr(chunk, 'chunk_id', 'unknown')
                                     enhanced_format.append({
                                         'chunk': chunk,
-                                        'similarity_score': score_map.get(chunk.chunk_id, 0.0),
+                                        'similarity_score': score_map.get(chunk_id, 0.0),
                                         'context': ''
                                     })
-                            logger.info(f"Converted {len(enhanced_format)} chunks to enhanced format for fallback")
+                            
+                            logger.info(f"[OK] Converted {len(enhanced_format)} chunks to enhanced format for fallback")
+                            logger.info("[STEP G: Generating response from fallback results...")
+                            
                             response, context = self._generate_intelligence_response(query, enhanced_format, user_id)
+                            
+                            logger.info("[RESULT] FALLBACK RESPONSE GENERATED SUCCESSFULLY")
                             return (response, context) if include_context else response
+                        else:
+                            logger.error("[ERROR] Basic search returned chunk IDs but couldn't retrieve chunk data")
+                    else:
+                        logger.error("[ERROR] Basic search also returned zero results")
+                        
                 except Exception as e:
-                    logger.error(f"Fallback search failed: {e}")
+                    logger.error(f"[ERROR] FALLBACK SEARCH FAILED: {e}")
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
                 
+                logger.error("[ALERT] BOTH ENHANCED AND BASIC SEARCH FAILED - RETURNING NO INFORMATION RESPONSE")
                 return "I couldn't find any relevant information for your query. Please try rephrasing or check if you have uploaded meeting documents.", ""
             
             # Generate context-aware response
+            logger.info("[STEP H: ENHANCED SEARCH SUCCESSFUL - Generating response...")
+            logger.info(f"   -> Calling _generate_intelligence_response() with {len(enhanced_results)} results")
+            
             response, context = self._generate_intelligence_response(query, enhanced_results, user_id)
+            
+            logger.info("[RESULT] ENHANCED SEARCH RESPONSE GENERATED SUCCESSFULLY")
+            logger.info(f"📝 Final response length: {len(response)} characters")
+            logger.info(f"📄 Final context length: {len(context) if context else 0} characters")
             
             if include_context:
                 return response, context
@@ -4250,10 +4357,10 @@ def main():
             print("🔄 Processing documents and building vector database...")
             processor.process_documents("meeting_documents")
         else:
-            print(f"✅ Loaded existing vector database with {processor.vector_db.index.ntotal} vectors")
+            print(f"[OK] Loaded existing vector database with {processor.vector_db.index.ntotal} vectors")
         
         # Show comprehensive statistics
-        print("\n📊 System Statistics:")
+        print("\n[STATS] System Statistics:")
         print("-" * 50)
         stats = processor.get_meeting_statistics()
         if "error" not in stats:
@@ -4268,7 +4375,7 @@ def main():
             # AI Configuration details removed from display
         
         # Interactive query loop
-        print("\n🎯 Interactive Query Session")
+        print("\n[RESULT] Interactive Query Session")
         print("-" * 50)
         print("💡 Now supports hundreds of documents with hybrid search!")
         print("🔍 Combines semantic similarity + keyword matching for better results")
@@ -4295,7 +4402,7 @@ def main():
                 break
             elif query.lower() == 'stats':
                 stats = processor.get_meeting_statistics()
-                print("\n📊 Detailed Statistics:")
+                print("\n[STATS] Detailed Statistics:")
                 print(json.dumps(stats, indent=2, default=str))
                 continue
             elif query.lower() == 'help':
@@ -4311,9 +4418,9 @@ def main():
             elif query.lower() == 'refresh':
                 try:
                     processor.refresh_clients()
-                    print("✅ OpenAI clients refreshed successfully")
+                    print("[OK] OpenAI clients refreshed successfully")
                 except Exception as e:
-                    print(f"❌ Failed to refresh clients: {e}")
+                    print(f"[ERROR] Failed to refresh clients: {e}")
                 continue
             elif not query:
                 print("❓ Please enter a valid question.")
@@ -4331,12 +4438,12 @@ def main():
                 print(answer)
                 
             except Exception as query_error:
-                print(f"❌ Error processing query: {query_error}")
+                print(f"[ERROR] Error processing query: {query_error}")
                 print("🔄 You can try rephrasing your question or check your OpenAI API key.")
     
     except Exception as e:
         logger.error(f"Critical error in main execution: {e}")
-        print(f"❌ Critical Error: {e}")
+        print(f"[ERROR] Critical Error: {e}")
         print("🔧 Please check your OpenAI API key and configuration.")
         print("💡 Make sure you have set OPENAI_API_KEY environment variable")
 
