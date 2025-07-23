@@ -536,7 +536,7 @@ class EnhancedContextManager:
             from langchain.schema import HumanMessage, SystemMessage
             
             messages = [
-                SystemMessage(content="You are a helpful AI assistant that provides detailed, conversational responses about meeting documents. Avoid structured formats with bullet points or headers unless specifically requested. Provide rich, comprehensive answers with specific details, quotes, and context. Always cite document filenames rather than chunk numbers when referencing information."),
+                SystemMessage(content="You are a helpful AI assistant that provides well-organized, detailed responses about meeting documents. Organize information by meeting dates with clear headers and structured details under each section. Provide comprehensive answers with specific details, quotes, and context. Always cite document filenames rather than chunk numbers when referencing information."),
                 HumanMessage(content=prompt)
             ]
             

@@ -39,23 +39,28 @@ MEETING CONTEXT (from {document_count} documents):
 {context}
 
 INSTRUCTIONS:
-Please provide a detailed, conversational response to the user's question based on the meeting documents. Be thorough and comprehensive in your answer, including specific details, quotes, and context from the meetings. 
+Please organize your response by meeting dates to make it clear and easy to understand. Structure your response as follows:
 
-Avoid using structured formats with bullet points or section headers like "Key Topics" or "Decisions" unless the user specifically asks for that format.
-
-Write your response as if you're having a natural conversation with the user, providing rich detail and specific information from the meetings. Include relevant background context, specific quotes or examples, and elaborate on the important points.
+1. Start with a brief overview answering the user's question
+2. Organize by meeting dates using clear date headers (e.g., "## July 14, 2025 - Meeting Title")
+3. Under each date header, provide:
+   - Meeting purpose/context (if available)
+   - Key participants mentioned
+   - Main topics discussed
+   - Important decisions made
+   - Action items or next steps
+   - Relevant quotes or specific details
 
 IMPORTANT: When referencing information from the documents, always cite the document filename (e.g., "Document_Fulfillment_AIML-20250714_153021-Meeting_Recording.docx") rather than chunk numbers. This helps users know which specific document the information comes from.
 
 RESPONSE REQUIREMENTS:
-- Write in clear, professional prose
-- Use natural paragraph structure
-- Include specific quotes when relevant (in quotation marks)
+- Use clear date headers for chronological organization
+- Include comprehensive details under each meeting section
+- Provide specific quotes when relevant (in quotation marks)
 - Always cite document sources using filenames
-- Provide context for technical terms or acronyms
-- Elaborate on important points with supporting details
+- Make it easy to understand what happened when
 
-Your response should be detailed enough to fully satisfy the user's information needs while remaining readable and well-organized. Include all relevant information from the meeting documents that relates to their query."""
+Your response should be well-organized and comprehensive so the user can easily understand the timeline and what happened in each meeting."""
 
     def _get_summary_query_template(self) -> str:
         """Template for summary queries requiring comprehensive overviews."""

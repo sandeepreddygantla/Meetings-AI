@@ -865,16 +865,27 @@ Based on the meeting documents from {timeframe_display}, please answer their que
 Meeting Documents Context (Chronologically Organized):
 {full_context}
 
-Please provide a detailed, conversational response to the user's question based on the meeting documents. Be thorough and comprehensive in your answer, including specific details, quotes, and context from the meetings. Avoid using structured formats with bullet points or section headers like "Key Topics" or "Decisions" unless the user specifically asks for that format.
+Please organize your response by meeting dates to make it clear and easy to understand. Use the meeting dates as headers and provide detailed information about what happened in each meeting.
 
-Write your response as if you're having a natural conversation with the user, providing rich detail and specific information from the meetings. Include relevant background context, specific quotes or examples, and elaborate on the important points.
+Format your response as follows:
+1. Start with a brief overview of the timeframe
+2. Then organize by meeting dates using clear date headers (e.g., "## July 14, 2025")
+3. Under each date header, provide:
+   - Meeting title/purpose (if available)
+   - Key participants mentioned
+   - Main topics discussed
+   - Important decisions made
+   - Action items or next steps
+   - Relevant quotes or specific details
+
+Make the information comprehensive and well-organized so the user can easily understand what happened in each meeting and when.
 
 IMPORTANT: When referencing information from the documents, always cite the document filename rather than chunk numbers. This helps users know which specific document the information comes from."""
 
                 from langchain.schema import HumanMessage, SystemMessage
                 
                 messages = [
-                    SystemMessage(content="You are a helpful AI assistant that provides detailed, conversational responses about meeting documents. Avoid structured formats with bullet points or headers unless specifically requested. Provide rich, comprehensive answers with specific details, quotes, and context. Always cite document filenames rather than chunk numbers when referencing information."),
+                    SystemMessage(content="You are a helpful AI assistant that provides well-organized, detailed responses about meeting documents. Organize information by meeting dates with clear headers and structured details under each date. Provide comprehensive answers with specific details, quotes, and context. Always cite document filenames rather than chunk numbers when referencing information."),
                     HumanMessage(content=prompt)
                 ]
                 
@@ -999,16 +1010,26 @@ Based on ALL documents in this project ({total_files} files total), please provi
 Project Documents Context:
 {full_context}
 
-Please provide a detailed, conversational response to the user's question using information from all the files. Be thorough and comprehensive, including specific details, quotes, and context. Avoid structured formats with bullet points or section headers unless the user specifically requests that format.
+Please organize your response by meeting dates and documents to make it clear and comprehensive. Structure your response as follows:
 
-Write as if you're having a natural conversation with the user, providing rich detail and specific information. Include relevant background context, specific quotes or examples, and elaborate on important points.
+1. Start with a brief project overview based on the user's question
+2. Organize information chronologically by meeting dates using clear headers (e.g., "## July 14, 2025 - [Meeting Title]")
+3. Under each meeting/document section, provide:
+   - Document source (filename)
+   - Key participants mentioned
+   - Main topics discussed
+   - Important decisions made
+   - Action items or next steps
+   - Relevant quotes or specific details
+
+Make the information well-organized and comprehensive so the user can easily understand the project timeline and what happened in each meeting.
 
 IMPORTANT: When referencing information, always cite the specific document filename rather than document numbers or chunk references. This helps users identify the source document."""
 
                 from langchain.schema import HumanMessage, SystemMessage
                 
                 messages = [
-                    SystemMessage(content="You are a helpful AI assistant that provides detailed, conversational responses about meeting documents. Avoid structured formats with bullet points or headers unless specifically requested. Provide rich, comprehensive answers with specific details, quotes, and context. Always cite document filenames rather than chunk numbers when referencing information."),
+                    SystemMessage(content="You are a helpful AI assistant that provides well-organized, comprehensive responses about meeting documents and project information. Organize information chronologically by meeting dates with clear headers and structured details under each section. Provide detailed answers with specific quotes, decisions, and action items. Always cite document filenames rather than chunk numbers when referencing information."),
                     HumanMessage(content=prompt)
                 ]
                 
