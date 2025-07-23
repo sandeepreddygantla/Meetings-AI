@@ -1,12 +1,14 @@
 """
 Chat service for Meetings AI application.
-Handles AI-powered chat interactions and query processing.
+Handles AI-powered chat interactions and query processing with enhanced context management.
 """
 import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 
 from src.database.manager import DatabaseManager
+from src.ai.context_manager import EnhancedContextManager, QueryContext
+from src.ai.enhanced_prompts import EnhancedPromptManager
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +18,7 @@ class ChatService:
     
     def __init__(self, db_manager: DatabaseManager, processor=None):
         """
-        Initialize chat service.
+        Initialize chat service with enhanced context management.
         
         Args:
             db_manager: Database manager instance
@@ -24,6 +26,14 @@ class ChatService:
         """
         self.db_manager = db_manager
         self.processor = processor  # For backwards compatibility with existing processor methods
+        
+        # Initialize enhanced components
+        self.enhanced_context_manager = EnhancedContextManager(db_manager, processor)
+        self.prompt_manager = EnhancedPromptManager()
+        
+        # Feature flags for gradual rollout
+        self.use_enhanced_processing = True  # Enable enhanced processing by default
+        self.enhanced_summary_threshold = 10  # Use enhanced for queries with 10+ potential documents
     
     def process_chat_query(
         self,
@@ -84,90 +94,23 @@ class ChatService:
             else:
                 logger.info("[OK] Vectors available - proceeding with query processing")
                 
-                # Process query using existing processor logic
-                if self.processor:
-                    logger.info("[PROCESSOR] Using processor for query processing")
+                # Determine processing strategy
+                should_use_enhanced = self._should_use_enhanced_processing(
+                    message, user_id, document_ids, project_id, project_ids, meeting_ids
+                )
+                
+                if should_use_enhanced and self.use_enhanced_processing:
+                    logger.info("[ENHANCED] Using enhanced context processing")
+                    response, follow_up_questions = self._process_with_enhanced_context(
+                        message, user_id, document_ids, project_id, project_ids, 
+                        meeting_ids, date_filters, folder_path
+                    )
                 else:
-                    logger.error("[ERROR] No processor available!")
-                    
-                if self.processor:
-                    try:
-                        # Combine project filters
-                        logger.info("[STEP2] Processing project filters...")
-                        combined_project_ids = []
-                        if project_id:
-                            combined_project_ids.append(project_id)
-                        if project_ids:
-                            combined_project_ids.extend(project_ids)
-                        final_project_id = combined_project_ids[0] if combined_project_ids else None
-                        
-                        logger.info(f"[FILTERS] Filter processing results:")
-                        logger.info(f"   - Original project_id: {project_id}")
-                        logger.info(f"   - Original project_ids: {project_ids}")
-                        logger.info(f"   - Final project_id: {final_project_id}")
-                        logger.info(f"   - document_ids: {document_ids}")
-                        logger.info(f"   - meeting_ids: {meeting_ids}")
-                        logger.info(f"   - folder_path: {folder_path}")
-                        
-                        # Detect if this is a summary query to use enhanced context
-                        logger.info("[STEP3] Detecting query type...")
-                        is_summary_query = self.processor.detect_summary_query(message)
-                        context_limit = 100 if is_summary_query else 50
-                        logger.info(f"[QUERY] Query type analysis:")
-                        logger.info(f"   - Is summary query: {is_summary_query}")
-                        logger.info(f"   - Context limit: {context_limit}")
-                        
-                        # THE MAIN PROCESSING CALL
-                        logger.info("[STEP4] Calling processor.answer_query_with_intelligence()...")
-                        logger.info("   -> This is where the REAL processing happens!")
-                        logger.info("   -> Vector search, SQLite queries, LLM generation all occur here")
-                        
-                        response, context = self.processor.answer_query_with_intelligence(
-                            message, 
-                            user_id=user_id, 
-                            document_ids=document_ids, 
-                            project_id=final_project_id,
-                            meeting_ids=meeting_ids,
-                            date_filters=date_filters,
-                            folder_path=folder_path,
-                            context_limit=context_limit, 
-                            include_context=True
-                        )
-                        
-                        # ===== DEBUG LOGGING: PROCESSOR RESPONSE =====
-                        logger.info("[RESULT] PROCESSOR RESPONSE RECEIVED")
-                        logger.info(f"[RESPONSE] Response length: {len(response)} characters")
-                        logger.info(f"[CONTEXT] Context chunks received: {len(context) if context else 0}")
-                        if response:
-                            logger.info(f"[PREVIEW] Response preview (first 200 chars): '{response[:200]}...'")
-                        else:
-                            logger.error("[CRITICAL] Processor returned empty response!")
-                        
-                        # Check for problematic responses
-                        if "no relevant information" in response.lower():
-                            logger.error("[ALERT] DETECTED: Processor returned 'no relevant information' - search pipeline failed!")
-                        elif "couldn't find" in response.lower():
-                            logger.error("[ALERT] DETECTED: Processor returned 'couldn't find' - search pipeline failed!")
-                        else:
-                            logger.info("[SUCCESS] Response appears to contain relevant information")
-                        
-                        # Generate follow-up questions
-                        logger.info("[STEP5] Generating follow-up questions...")
-                        try:
-                            follow_up_questions = self.processor.generate_follow_up_questions(message, response, context)
-                            logger.info(f"[FOLLOWUP] Generated {len(follow_up_questions)} follow-up questions")
-                        except Exception as follow_up_error:
-                            logger.error(f"[ERROR] Error generating follow-up questions: {follow_up_error}")
-                            follow_up_questions = []
-                            
-                    except Exception as e:
-                        logger.error(f"Error generating response: {e}")
-                        response = f"I encountered an error while processing your question: {str(e)}"
-                        follow_up_questions = []
-                else:
-                    # Fallback response if processor not available
-                    response = "Chat processing is temporarily unavailable. Please try again later."
-                    follow_up_questions = []
+                    logger.info("[LEGACY] Using legacy processor for query processing")
+                    response, follow_up_questions = self._process_with_legacy_processor(
+                        message, user_id, document_ids, project_id, project_ids,
+                        meeting_ids, date_filters, folder_path
+                    )
             
             timestamp = datetime.now().isoformat()
             return response, follow_up_questions, timestamp
@@ -396,3 +339,246 @@ class ChatService:
         except Exception as e:
             logger.error(f"Error getting available filters: {e}")
             return {'error': str(e)}
+    
+    def _should_use_enhanced_processing(
+        self,
+        message: str,
+        user_id: str,
+        document_ids: Optional[List[str]] = None,
+        project_id: Optional[str] = None,
+        project_ids: Optional[List[str]] = None,
+        meeting_ids: Optional[List[str]] = None
+    ) -> bool:
+        """
+        Determine if enhanced processing should be used based on query characteristics.
+        
+        Args:
+            message: User query message
+            user_id: User ID
+            document_ids: Document filter
+            project_id: Project filter
+            project_ids: Multiple project filters
+            meeting_ids: Meeting filters
+            
+        Returns:
+            True if enhanced processing should be used
+        """
+        try:
+            # Check for summary/comprehensive query indicators
+            message_lower = message.lower()
+            summary_indicators = [
+                'summary', 'summarize', 'overview', 'comprehensive', 
+                'all meetings', 'all documents', 'everything',
+                'across all', 'complete picture', 'full scope'
+            ]
+            
+            is_summary_query = any(indicator in message_lower for indicator in summary_indicators)
+            
+            # Check if no specific filters are applied (user wants all data)
+            no_specific_filters = not any([document_ids, project_id, project_ids, meeting_ids])
+            
+            # Check document count to determine if enhanced processing is beneficial
+            try:
+                user_documents = self.db_manager.get_all_documents(user_id)
+                document_count = len(user_documents)
+            except:
+                document_count = 0
+            
+            # Use enhanced processing for:
+            # 1. Summary queries with many documents
+            # 2. Queries without specific filters and many documents
+            # 3. Comprehensive analysis requests
+            should_use_enhanced = (
+                (is_summary_query and document_count >= self.enhanced_summary_threshold) or
+                (no_specific_filters and document_count >= self.enhanced_summary_threshold) or
+                ('comprehensive' in message_lower and document_count > 5)
+            )
+            
+            logger.info(f"[ENHANCED_DECISION] Enhanced processing decision:")
+            logger.info(f"  - Is summary query: {is_summary_query}")
+            logger.info(f"  - No specific filters: {no_specific_filters}")
+            logger.info(f"  - Document count: {document_count}")
+            logger.info(f"  - Threshold: {self.enhanced_summary_threshold}")
+            logger.info(f"  - Decision: {should_use_enhanced}")
+            
+            return should_use_enhanced
+            
+        except Exception as e:
+            logger.error(f"[ERROR] Error determining processing strategy: {e}")
+            return False  # Default to legacy processing on error
+    
+    def _process_with_enhanced_context(
+        self,
+        message: str,
+        user_id: str,
+        document_ids: Optional[List[str]] = None,
+        project_id: Optional[str] = None,
+        project_ids: Optional[List[str]] = None,
+        meeting_ids: Optional[List[str]] = None,
+        date_filters: Optional[Dict[str, Any]] = None,
+        folder_path: Optional[str] = None
+    ) -> Tuple[str, List[str]]:
+        """
+        Process query using enhanced context management.
+        
+        Returns:
+            Tuple of (response, follow_up_questions)
+        """
+        try:
+            # Combine project filters
+            combined_project_ids = []
+            if project_id:
+                combined_project_ids.append(project_id)
+            if project_ids:
+                combined_project_ids.extend(project_ids)
+            final_project_id = combined_project_ids[0] if combined_project_ids else None
+            
+            # Detect query characteristics
+            is_summary_query = (
+                self.processor.detect_summary_query(message) if self.processor 
+                else self._detect_summary_query_fallback(message)
+            )
+            
+            # Create query context
+            query_context = QueryContext(
+                query=message,
+                user_id=user_id,
+                document_ids=document_ids,
+                project_id=final_project_id,
+                meeting_ids=meeting_ids,
+                date_filters=date_filters,
+                folder_path=folder_path,
+                is_summary_query=is_summary_query,
+                is_comprehensive=self._is_comprehensive_query(message),
+                context_limit=200 if is_summary_query else 100  # Enhanced context limits
+            )
+            
+            # Process with enhanced context manager
+            response, follow_up_questions, _ = self.enhanced_context_manager.process_enhanced_query(query_context)
+            
+            logger.info(f"[ENHANCED] Enhanced processing completed:")
+            logger.info(f"  - Response length: {len(response)} characters")
+            logger.info(f"  - Follow-up questions: {len(follow_up_questions)}")
+            
+            return response, follow_up_questions
+            
+        except Exception as e:
+            logger.error(f"[ERROR] Enhanced processing failed: {e}")
+            # Fallback to legacy processing
+            return self._process_with_legacy_processor(
+                message, user_id, document_ids, project_id, project_ids,
+                meeting_ids, date_filters, folder_path
+            )
+    
+    def _process_with_legacy_processor(
+        self,
+        message: str,
+        user_id: str,
+        document_ids: Optional[List[str]] = None,
+        project_id: Optional[str] = None,
+        project_ids: Optional[List[str]] = None,
+        meeting_ids: Optional[List[str]] = None,
+        date_filters: Optional[Dict[str, Any]] = None,
+        folder_path: Optional[str] = None
+    ) -> Tuple[str, List[str]]:
+        """
+        Process query using legacy processor.
+        
+        Returns:
+            Tuple of (response, follow_up_questions)
+        """
+        try:
+            if not self.processor:
+                return "Chat processing is temporarily unavailable. Please try again later.", []
+            
+            # Combine project filters
+            combined_project_ids = []
+            if project_id:
+                combined_project_ids.append(project_id)
+            if project_ids:
+                combined_project_ids.extend(project_ids)
+            final_project_id = combined_project_ids[0] if combined_project_ids else None
+            
+            logger.info(f"[LEGACY_FILTERS] Filter processing results:")
+            logger.info(f"   - Original project_id: {project_id}")
+            logger.info(f"   - Original project_ids: {project_ids}")
+            logger.info(f"   - Final project_id: {final_project_id}")
+            logger.info(f"   - document_ids: {document_ids}")
+            logger.info(f"   - meeting_ids: {meeting_ids}")
+            logger.info(f"   - folder_path: {folder_path}")
+            
+            # Detect if this is a summary query to use enhanced context
+            is_summary_query = self.processor.detect_summary_query(message)
+            context_limit = 100 if is_summary_query else 50
+            logger.info(f"[LEGACY_QUERY] Query type analysis:")
+            logger.info(f"   - Is summary query: {is_summary_query}")
+            logger.info(f"   - Context limit: {context_limit}")
+            
+            # THE MAIN PROCESSING CALL
+            logger.info("[LEGACY_PROCESSING] Calling processor.answer_query_with_intelligence()...")
+            
+            response, context = self.processor.answer_query_with_intelligence(
+                message, 
+                user_id=user_id, 
+                document_ids=document_ids, 
+                project_id=final_project_id,
+                meeting_ids=meeting_ids,
+                date_filters=date_filters,
+                folder_path=folder_path,
+                context_limit=context_limit, 
+                include_context=True
+            )
+            
+            # ===== DEBUG LOGGING: PROCESSOR RESPONSE =====
+            logger.info("[LEGACY_RESULT] PROCESSOR RESPONSE RECEIVED")
+            logger.info(f"[RESPONSE] Response length: {len(response)} characters")
+            logger.info(f"[CONTEXT] Context chunks received: {len(context) if context else 0}")
+            if response:
+                logger.info(f"[PREVIEW] Response preview (first 200 chars): '{response[:200]}...'")
+            else:
+                logger.error("[CRITICAL] Processor returned empty response!")
+            
+            # Check for problematic responses
+            if "no relevant information" in response.lower():
+                logger.error("[ALERT] DETECTED: Processor returned 'no relevant information' - search pipeline failed!")
+            elif "couldn't find" in response.lower():
+                logger.error("[ALERT] DETECTED: Processor returned 'couldn't find' - search pipeline failed!")
+            else:
+                logger.info("[SUCCESS] Response appears to contain relevant information")
+            
+            # Generate follow-up questions
+            logger.info("[LEGACY_FOLLOWUP] Generating follow-up questions...")
+            try:
+                follow_up_questions = self.processor.generate_follow_up_questions(message, response, context)
+                logger.info(f"[FOLLOWUP] Generated {len(follow_up_questions)} follow-up questions")
+            except Exception as follow_up_error:
+                logger.error(f"[ERROR] Error generating follow-up questions: {follow_up_error}")
+                follow_up_questions = []
+            
+            return response, follow_up_questions
+            
+        except Exception as e:
+            logger.error(f"[ERROR] Legacy processing failed: {e}")
+            return f"I encountered an error while processing your question: {str(e)}", []
+    
+    def _detect_summary_query_fallback(self, message: str) -> bool:
+        """Fallback summary query detection if processor is not available."""
+        summary_keywords = [
+            'summarize', 'summary', 'summaries', 'overview', 'brief', 
+            'recap', 'highlights', 'key points', 'main points',
+            'all meetings', 'all documents', 'overall', 'across all',
+            'consolidate', 'aggregate', 'compile', 'comprehensive'
+        ]
+        
+        message_lower = message.lower()
+        return any(keyword in message_lower for keyword in summary_keywords)
+    
+    def _is_comprehensive_query(self, message: str) -> bool:
+        """Detect if query is asking for comprehensive analysis."""
+        comprehensive_indicators = [
+            'comprehensive', 'complete picture', 'full scope', 'everything',
+            'all meetings', 'all documents', 'entire', 'whole', 'total'
+        ]
+        
+        message_lower = message.lower()
+        return any(indicator in message_lower for indicator in comprehensive_indicators)
