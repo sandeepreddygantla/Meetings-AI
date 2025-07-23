@@ -604,14 +604,45 @@ function addMessageToUI(sender, content, updateHistory = true) {
     }
 
     if (sender === 'assistant') {
+        // Generate unique ID for this message
+        const messageId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        messageDiv.setAttribute('data-message-id', messageId);
+        
         const actionsDiv = document.createElement('div');
         actionsDiv.className = 'message-actions';
-        actionsDiv.innerHTML = `
-            <button class="message-action-btn" title="Like">👍</button>
-            <button class="message-action-btn" title="Dislike">👎</button>
-            <button class="message-action-btn" title="Copy" onclick="copyToClipboard(\`${content.replace(/`/g, '\\`').replace(/\$/g, '\\$')}\`)">📋</button>
-            <button class="message-action-btn" title="Regenerate" onclick="regenerateResponse()">🔄</button>
-        `;
+        
+        // Create buttons safely without inline onclick
+        const likeBtn = document.createElement('button');
+        likeBtn.className = 'message-action-btn';
+        likeBtn.title = 'Like';
+        likeBtn.textContent = '👍';
+        
+        const dislikeBtn = document.createElement('button');
+        dislikeBtn.className = 'message-action-btn';
+        dislikeBtn.title = 'Dislike';
+        dislikeBtn.textContent = '👎';
+        
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'message-action-btn';
+        copyBtn.title = 'Copy';
+        copyBtn.textContent = '📋';
+        copyBtn.setAttribute('data-content', content); // Store content safely as data attribute
+        copyBtn.addEventListener('click', function() {
+            const contentToCopy = this.getAttribute('data-content');
+            copyToClipboard(contentToCopy);
+        });
+        
+        const regenerateBtn = document.createElement('button');
+        regenerateBtn.className = 'message-action-btn';
+        regenerateBtn.title = 'Regenerate';
+        regenerateBtn.textContent = '🔄';
+        regenerateBtn.addEventListener('click', regenerateResponse);
+        
+        actionsDiv.appendChild(likeBtn);
+        actionsDiv.appendChild(dislikeBtn);
+        actionsDiv.appendChild(copyBtn);
+        actionsDiv.appendChild(regenerateBtn);
+        
         messageContent.appendChild(actionsDiv);
     }
 
@@ -637,6 +668,7 @@ function copyToClipboard(text) {
         showNotification('Copied to clipboard!');
     });
 }
+
 
 function showNotification(message, type = 'success') {
     
