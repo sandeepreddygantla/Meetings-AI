@@ -383,7 +383,7 @@ class EnhancedContextManager:
                         break
                         
             except Exception as e:
-                logger.error(f"[ERROR] Failed to get chunks for document {doc.get('document_id')}: {e}")
+                logger.error(f"[ERROR] Failed to get chunks for document {doc.document_id}: {e}")
                 continue
             
             if len(context_chunks) >= max_chunks:
@@ -416,7 +416,7 @@ class EnhancedContextManager:
             
             # Apply document filter
             if query_context.document_ids:
-                documents = [d for d in documents if d.get('document_id') in query_context.document_ids]
+                documents = [d for d in documents if d.document_id in query_context.document_ids]
                 logger.info(f"[FILTER] After document filter: {len(documents)} documents")
             
             # Apply folder filter
@@ -536,7 +536,7 @@ class EnhancedContextManager:
             from langchain.schema import HumanMessage, SystemMessage
             
             messages = [
-                SystemMessage(content="You are an expert AI assistant specializing in comprehensive meeting document analysis. Provide detailed, insightful, and well-structured responses."),
+                SystemMessage(content="You are a helpful AI assistant that provides detailed, conversational responses about meeting documents. Avoid structured formats with bullet points or headers unless specifically requested. Provide rich, comprehensive answers with specific details, quotes, and context. Always cite document filenames rather than chunk numbers when referencing information."),
                 HumanMessage(content=prompt)
             ]
             

@@ -669,19 +669,24 @@ class SQLiteOperations:
             
             documents = []
             for row in results:
-                doc = {
-                    'document_id': row[0],
-                    'filename': row[1],
-                    'date': row[2],
-                    'title': row[3],
-                    'content_summary': row[4],
-                    'chunk_count': row[5] or 0,
-                    'file_size': row[6] or 0,
-                    'user_id': row[7],
-                    'project_id': row[8],
-                    'meeting_id': row[9],
-                    'folder_path': row[10]
-                }
+                doc = MeetingDocument(
+                    document_id=row[0],
+                    filename=row[1],
+                    date=datetime.fromisoformat(row[2]) if row[2] else None,
+                    title=row[3],
+                    content_summary=row[4],
+                    main_topics=[],  # Not available in this query
+                    past_events=[],  # Not available in this query
+                    future_actions=[],  # Not available in this query
+                    participants=[],  # Not available in this query
+                    chunk_count=row[5] or 0,
+                    file_size=row[6] or 0,
+                    user_id=row[7],
+                    project_id=row[8],
+                    meeting_id=row[9],
+                    folder_path=row[10],
+                    content=""  # Content not loaded for performance
+                )
                 documents.append(doc)
             
             return documents
@@ -751,19 +756,24 @@ class SQLiteOperations:
             
             documents = []
             for row in results:
-                doc = {
-                    'document_id': row[0],
-                    'filename': row[1],
-                    'date': row[2],
-                    'title': row[3],
-                    'content_summary': row[4],
-                    'chunk_count': row[5] or 0,
-                    'file_size': row[6] or 0,
-                    'user_id': row[7],
-                    'project_id': row[8],
-                    'meeting_id': row[9],
-                    'folder_path': row[10]
-                }
+                doc = MeetingDocument(
+                    document_id=row[0],
+                    filename=row[1],
+                    date=datetime.fromisoformat(row[2]) if row[2] else None,
+                    title=row[3],
+                    content_summary=row[4],
+                    main_topics=[],  # Not available in this query
+                    past_events=[],  # Not available in this query
+                    future_actions=[],  # Not available in this query
+                    participants=[],  # Not available in this query
+                    chunk_count=row[5] or 0,
+                    file_size=row[6] or 0,
+                    user_id=row[7],
+                    project_id=row[8],
+                    meeting_id=row[9],
+                    folder_path=row[10],
+                    content=""  # Content not loaded for performance
+                )
                 documents.append(doc)
             
             return documents

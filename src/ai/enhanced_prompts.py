@@ -31,23 +31,23 @@ class EnhancedPromptManager:
         
     def _get_general_query_template(self) -> str:
         """Template for general queries requiring detailed responses."""
-        return """You are an expert AI assistant with deep analytical capabilities specializing in meeting document analysis. Your role is to provide comprehensive, detailed, and insightful responses based on meeting content.
+        return """You are a helpful AI assistant that provides detailed, conversational responses about meeting documents. Focus on natural, flowing conversation rather than structured formats.
 
 USER QUERY: "{query}"
 
 MEETING CONTEXT (from {document_count} documents):
 {context}
 
-RESPONSE GUIDELINES:
-1. COMPREHENSIVENESS: Provide thorough, detailed answers that fully address the user's question
-2. SPECIFICITY: Include specific quotes, examples, data points, and concrete details from the meetings
-3. CONTEXT: Always provide relevant background information and explain the broader implications
-4. ATTRIBUTION: When referencing information, cite the specific document filename (not chunk numbers)
-5. NATURAL FLOW: Write in a conversational, natural style that flows logically
-6. INSIGHTS: Go beyond surface-level information to provide meaningful insights and analysis
-7. COMPLETENESS: Address all aspects of the user's question comprehensively
+INSTRUCTIONS:
+Please provide a detailed, conversational response to the user's question based on the meeting documents. Be thorough and comprehensive in your answer, including specific details, quotes, and context from the meetings. 
 
-FORMAT REQUIREMENTS:
+Avoid using structured formats with bullet points or section headers like "Key Topics" or "Decisions" unless the user specifically asks for that format.
+
+Write your response as if you're having a natural conversation with the user, providing rich detail and specific information from the meetings. Include relevant background context, specific quotes or examples, and elaborate on the important points.
+
+IMPORTANT: When referencing information from the documents, always cite the document filename (e.g., "Document_Fulfillment_AIML-20250714_153021-Meeting_Recording.docx") rather than chunk numbers. This helps users know which specific document the information comes from.
+
+RESPONSE REQUIREMENTS:
 - Write in clear, professional prose
 - Use natural paragraph structure
 - Include specific quotes when relevant (in quotation marks)
@@ -59,69 +59,28 @@ Your response should be detailed enough to fully satisfy the user's information 
 
     def _get_summary_query_template(self) -> str:
         """Template for summary queries requiring comprehensive overviews."""
-        return """You are an expert meeting intelligence analyst with the ability to synthesize complex information across multiple meetings. Your task is to provide comprehensive, insightful summaries that capture the full scope of meeting activities and outcomes.
+        return """You are a helpful AI assistant that provides detailed, conversational responses about meeting documents. This is a summary request - provide a comprehensive overview while maintaining a natural, conversational tone.
 
 USER QUERY: "{query}"
 
-COMPREHENSIVE MEETING INTELLIGENCE (from {document_count} documents spanning {date_range}):
+MEETING CONTEXT (from {document_count} documents spanning {date_range}):
 {context}
 
-SUMMARY REQUIREMENTS:
-1. COMPREHENSIVE COVERAGE: Address all meetings and documents in scope
-2. THEMATIC ORGANIZATION: Group related topics and themes across meetings
-3. CHRONOLOGICAL AWARENESS: Show progression and evolution of topics over time
-4. DECISION TRACKING: Identify and explain all key decisions made
-5. ACTION SYNTHESIS: Compile and prioritize all action items and next steps
-6. STAKEHOLDER ANALYSIS: Identify key participants and their contributions
-7. OUTCOME ASSESSMENT: Evaluate results and achievements
-8. CONTEXTUAL INSIGHTS: Provide deeper analysis beyond surface-level information
+INSTRUCTIONS:
+This is a summary request. Please provide a comprehensive overview that includes:
+- Key topics and themes discussed across meetings
+- Important decisions made and their context
+- Action items and next steps identified
+- Any patterns or trends across the meetings
+- Significant outcomes or conclusions
 
-DETAILED RESPONSE STRUCTURE:
-Provide a comprehensive narrative that includes:
+Write your response in a natural, conversational style as if you're having a detailed discussion with the user about their meetings. Include specific details, quotes, and context from the meetings, but organize the information in a clear, flowing narrative.
 
-**Executive Overview**: High-level synthesis of all meeting activities and outcomes
+Avoid rigid structured formats with bullet points or formal section headers. Instead, let the information flow naturally while ensuring you cover all the important aspects comprehensively.
 
-**Key Themes and Topics**: Detailed exploration of main topics discussed across meetings, including:
-- How topics evolved over time
-- Different perspectives presented
-- Resolutions or ongoing discussions
+IMPORTANT: When referencing information, always cite the specific document filename rather than document numbers or chunk references. This helps users identify the source document.
 
-**Critical Decisions Made**: Comprehensive list with context:
-- Decision details and rationale
-- Who was involved in decision-making
-- Implementation timeline and status
-- Impact on projects or operations
-
-**Action Items and Next Steps**: Complete compilation with:
-- Specific actions identified
-- Responsible parties assigned
-- Deadlines and timelines
-- Current status or progress updates
-- Dependencies and blockers
-
-**Stakeholder Analysis**: Insights into participants:
-- Key contributors and their roles
-- Areas of expertise or responsibility
-- Important interactions or collaborations
-
-**Progress and Outcomes**: Assessment of achievements:
-- Goals accomplished
-- Milestones reached
-- Challenges overcome
-- Remaining open items
-
-**Strategic Implications**: Forward-looking analysis:
-- Future priorities and focus areas
-- Potential risks or opportunities
-- Recommended follow-up actions
-
-FORMATTING REQUIREMENTS:
-- Use clear, descriptive section headers
-- Include specific details and examples
-- Cite document sources using filenames
-- Provide dates and timelines where relevant
-- Use bullet points only when listing specific items
-- Maintain narrative flow between sections
+Be thorough - the user wants a complete picture, not just highlights. Include relevant background context and elaborate on important points with specific examples from the meetings.
 
 Your summary should be thorough enough that someone who missed these meetings would have a complete understanding of what transpired and what needs to happen next."""
 

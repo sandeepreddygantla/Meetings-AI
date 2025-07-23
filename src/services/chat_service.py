@@ -270,7 +270,7 @@ class ChatService:
             # Validate document access (if needed)
             if document_ids:
                 user_documents = self.db_manager.get_all_documents(user_id)
-                user_doc_ids = [doc['document_id'] for doc in user_documents]
+                user_doc_ids = [doc.document_id for doc in user_documents]
                 for doc_id in document_ids:
                     if doc_id not in user_doc_ids:
                         return False, f'Invalid document selection: {doc_id}'
@@ -865,9 +865,20 @@ Based on the meeting documents from {timeframe_display}, please answer their que
 Meeting Documents Context (Chronologically Organized):
 {full_context}
 
-Provide a direct, helpful answer that addresses exactly what the user wants to know about {timeframe_display}. Include specific dates, participants, and key information from the meetings."""
+Please provide a detailed, conversational response to the user's question based on the meeting documents. Be thorough and comprehensive in your answer, including specific details, quotes, and context from the meetings. Avoid using structured formats with bullet points or section headers like "Key Topics" or "Decisions" unless the user specifically asks for that format.
 
-                response = self.processor.llm.invoke(prompt).content
+Write your response as if you're having a natural conversation with the user, providing rich detail and specific information from the meetings. Include relevant background context, specific quotes or examples, and elaborate on the important points.
+
+IMPORTANT: When referencing information from the documents, always cite the document filename rather than chunk numbers. This helps users know which specific document the information comes from."""
+
+                from langchain.schema import HumanMessage, SystemMessage
+                
+                messages = [
+                    SystemMessage(content="You are a helpful AI assistant that provides detailed, conversational responses about meeting documents. Avoid structured formats with bullet points or headers unless specifically requested. Provide rich, comprehensive answers with specific details, quotes, and context. Always cite document filenames rather than chunk numbers when referencing information."),
+                    HumanMessage(content=prompt)
+                ]
+                
+                response = self.processor.llm.invoke(messages).content
                 
                 logger.info(f"Generated date-based summary: {len(response)} characters")
                 
@@ -988,16 +999,20 @@ Based on ALL documents in this project ({total_files} files total), please provi
 Project Documents Context:
 {full_context}
 
-Please provide a thorough, well-organized response that:
-1. Directly answers what the user asked about the project
-2. Synthesizes information across all documents  
-3. Identifies key themes, patterns, and insights
-4. Includes specific examples and references
-5. Organizes information logically for easy understanding
+Please provide a detailed, conversational response to the user's question using information from all the files. Be thorough and comprehensive, including specific details, quotes, and context. Avoid structured formats with bullet points or section headers unless the user specifically requests that format.
 
-Focus on being helpful and comprehensive while staying relevant to their specific question."""
+Write as if you're having a natural conversation with the user, providing rich detail and specific information. Include relevant background context, specific quotes or examples, and elaborate on important points.
 
-                response = self.processor.llm.invoke(prompt).content
+IMPORTANT: When referencing information, always cite the specific document filename rather than document numbers or chunk references. This helps users identify the source document."""
+
+                from langchain.schema import HumanMessage, SystemMessage
+                
+                messages = [
+                    SystemMessage(content="You are a helpful AI assistant that provides detailed, conversational responses about meeting documents. Avoid structured formats with bullet points or headers unless specifically requested. Provide rich, comprehensive answers with specific details, quotes, and context. Always cite document filenames rather than chunk numbers when referencing information."),
+                    HumanMessage(content=prompt)
+                ]
+                
+                response = self.processor.llm.invoke(messages).content
                 
                 logger.info(f"Generated project summary: {len(response)} characters for {total_files} documents")
                 
