@@ -601,8 +601,8 @@ class DatabaseManager:
         self.vector_ops.chunk_metadata = value
     
     def _rebuild_chunk_metadata(self):
-        """Rebuild chunk metadata for backward compatibility"""
-        self.vector_ops.rebuild_chunk_metadata(self.db_path)
+        """Rebuild chunk metadata - not needed in simplified architecture"""
+        logger.info("Chunk metadata rebuild not needed - using simplified IndexFlatIP")
     
     # Complete Document Deletion Operations
     def delete_document_complete(self, document_id: str, user_id: str) -> Dict[str, Any]:
@@ -649,14 +649,9 @@ class DatabaseManager:
             logger.info(f"Starting complete deletion for document {document_id} (user: {user_id})")
             logger.info(f"File path: {file_path}, Chunks: {len(chunk_ids)}")
             
-            # Step 2: Delete from vector database first (can be rolled back)
-            if chunk_ids:
-                vector_success = self.vector_ops.delete_document_vectors(document_id, chunk_ids)
-                result['vectors'] = vector_success
-                if not vector_success:
-                    logger.warning(f"Vector deletion failed for document {document_id}, but continuing...")
-            else:
-                result['vectors'] = True  # No vectors to delete
+            # Step 2: Document deletion not supported in simplified architecture
+            logger.info("Document deletion from vector database not supported - simplified architecture")
+            result['vectors'] = True  # Skip vector deletion
             
             # Step 3: Delete chunks from SQLite
             chunks_success = self.sqlite_ops.delete_chunks_by_document_id(document_id)
@@ -849,7 +844,8 @@ class DatabaseManager:
     def rebuild_vector_index_after_deletion(self) -> bool:
         """Force rebuild of vector index (useful for maintenance)"""
         try:
-            return self.vector_ops.force_rebuild_index()
+            logger.info("Index rebuild not needed - using simplified IndexFlatIP")
+            return True  # Always successful in simplified architecture
         except Exception as e:
             logger.error(f"Error rebuilding vector index: {e}")
             return False

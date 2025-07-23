@@ -1,6 +1,6 @@
 """
-Vector database operations using FAISS IndexIDMap for direct deletion support.
-This module handles all FAISS-related operations with direct vector deletion capabilities.
+Simplified vector database operations using standard FAISS IndexFlatIP.
+This module handles vector storage and search operations only - no deletion complexity.
 """
 
 import os
@@ -17,11 +17,11 @@ logger = logging.getLogger(__name__)
 
 
 class VectorOperations:
-    """Handles all FAISS IndexIDMap vector database operations with direct deletion"""
+    """Handles simplified FAISS vector database operations - upload and search only"""
     
     def __init__(self, index_path: str = "vector_index.faiss", dimension: int = 3072):
         """
-        Initialize vector operations with IndexIDMap for direct deletion
+        Initialize vector operations with simple IndexFlatIP
         
         Args:
             index_path: Path to FAISS index file
@@ -30,285 +30,30 @@ class VectorOperations:
         self.index_path = index_path
         self.dimension = dimension
         self.index = None
-        self.chunk_id_to_int_map = {}  # Maps chunk_id to integer ID for FAISS
-        self.int_to_chunk_id_map = {}  # Reverse mapping for safety
         self._load_or_create_index()
     
     def _load_or_create_index(self):
-        """Load existing FAISS IndexIDMap or create new one"""
+        """Load existing FAISS index or create new simple IndexFlatIP"""
         if os.path.exists(self.index_path):
             try:
-                loaded_index = faiss.read_index(self.index_path)
-                
-                # Check if it's already an IndexIDMap
-                if isinstance(loaded_index, faiss.IndexIDMap):
-                    self.index = loaded_index
-                    logger.info(f"Loaded existing FAISS IndexIDMap with {self.index.ntotal} vectors")
-                    
-                    # CRITICAL: Rebuild the ID mappings from database
-                    # Without this, we get "Integer ID not found in reverse mapping" warnings
-                    self._rebuild_id_mappings_from_database()
-                    
-                else:
-                    # Convert old IndexFlatIP to IndexIDMap
-                    logger.info(f"Converting old FAISS index to IndexIDMap format")
-                    base_index = faiss.IndexFlatIP(self.dimension)
-                    self.index = faiss.IndexIDMap(base_index)
-                    # Note: Old index data will be lost, but since not in production, this is acceptable
-                    logger.info("Created new IndexIDMap (old data reset for format compatibility)")
-                    
+                self.index = faiss.read_index(self.index_path)
+                logger.info(f"Loaded existing FAISS index with {self.index.ntotal} vectors")
             except Exception as e:
-                logger.error(f"Error loading FAISS index: {e}")
-                base_index = faiss.IndexFlatIP(self.dimension)
-                self.index = faiss.IndexIDMap(base_index)
+                logger.error(f"Error loading FAISS index: {e}, creating new one")
+                self.index = faiss.IndexFlatIP(self.dimension)
+                logger.info("Created new FAISS IndexFlatIP")
         else:
-            # Create new IndexIDMap
-            base_index = faiss.IndexFlatIP(self.dimension)
-            self.index = faiss.IndexIDMap(base_index)
-            logger.info("Created new empty FAISS IndexIDMap")
-            
-            # Try to rebuild from existing database data if available
-            self._attempt_rebuild_from_database()
-    
-    def _chunk_id_to_int(self, chunk_id: str) -> int:
-        """
-        Convert chunk_id to integer for FAISS IndexIDMap
-        
-        Args:
-            chunk_id: String chunk ID
-            
-        Returns:
-            Integer ID for FAISS (31-bit positive integer)
-        """
-        if chunk_id in self.chunk_id_to_int_map:
-            return self.chunk_id_to_int_map[chunk_id]
-        
-        # Generate stable hash - using built-in hash but ensuring positive 31-bit
-        int_id = abs(hash(chunk_id)) % (2**31 - 1)
-        
-        # Check for collision
-        collision_count = 0
-        original_int_id = int_id
-        while int_id in self.int_to_chunk_id_map and self.int_to_chunk_id_map[int_id] != chunk_id:
-            collision_count += 1
-            int_id = (original_int_id + collision_count) % (2**31 - 1)
-            
-            if collision_count > 1000:  # Prevent infinite loop
-                raise Exception(f"Too many hash collisions for chunk_id {chunk_id}")
-        
-        # Store bidirectional mapping
-        self.chunk_id_to_int_map[chunk_id] = int_id
-        self.int_to_chunk_id_map[int_id] = chunk_id
-        
-        return int_id
-    
-    def _rebuild_id_mappings_from_database(self):
-        """
-        CRITICAL FIX: Rebuild ID mappings AND synchronize FAISS with database.
-        This ensures perfect sync between FAISS vectors and database chunks.
-        PRODUCTION-READY for IIS environment.
-        """
-        try:
-            db_path = "meeting_documents.db"
-            if not os.path.exists(db_path):
-                logger.error(f"Database not found at {db_path} for rebuilding ID mappings")
-                return
-            
-            logger.info(f"[SYNC] Starting FAISS-Database synchronization...")
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            
-            # Get all chunk_ids from database
-            try:
-                cursor.execute('SELECT DISTINCT chunk_id FROM chunks ORDER BY chunk_id')
-                db_chunk_ids = [row[0] for row in cursor.fetchall()]
-            except sqlite3.Error as db_error:
-                logger.error(f"Database query failed: {db_error}")
-                conn.close()
-                return
-            
-            conn.close()
-            
-            if not db_chunk_ids:
-                logger.warning("No chunks found in database - clearing FAISS index")
-                self._clear_faiss_completely()
-                return
-            
-            logger.info(f"[SYNC] Database has {len(db_chunk_ids)} chunks")
-            logger.info(f"[SYNC] FAISS has {self.index.ntotal} vectors")
-            
-            # Step 1: Clear existing mappings
-            self.chunk_id_to_int_map.clear()
-            self.int_to_chunk_id_map.clear()
-            
-            # Step 2: Rebuild mappings for database chunks
-            logger.info(f"[SYNC] Rebuilding ID mappings for {len(db_chunk_ids)} chunks...")
-            
-            db_int_ids = []
-            for chunk_id in db_chunk_ids:
-                try:
-                    int_id = self._chunk_id_to_int(chunk_id)
-                    db_int_ids.append(int_id)
-                except Exception as chunk_error:
-                    logger.error(f"Failed to map chunk {chunk_id}: {chunk_error}")
-            
-            # Step 3: Get current FAISS vector IDs
-            faiss_vector_ids = []
-            if self.index.ntotal > 0:
-                try:
-                    # Get all vector IDs from FAISS
-                    dummy_vector = np.zeros((1, self.dimension), dtype=np.float32)
-                    similarities, ids = self.index.search(dummy_vector, self.index.ntotal)
-                    faiss_vector_ids = [int(id_val) for id_val in ids[0] if id_val != -1]
-                    logger.info(f"[SYNC] FAISS contains {len(faiss_vector_ids)} vector IDs")
-                except Exception as e:
-                    logger.error(f"Error reading FAISS vector IDs: {e}")
-                    faiss_vector_ids = []
-            
-            # Step 4: Find synchronization issues
-            db_set = set(db_int_ids)
-            faiss_set = set(faiss_vector_ids)
-            
-            orphaned_in_faiss = faiss_set - db_set
-            missing_from_faiss = db_set - faiss_set
-            synchronized = db_set & faiss_set
-            
-            logger.info(f"[SYNC] Analysis:")
-            logger.info(f"  - Synchronized: {len(synchronized)}")
-            logger.info(f"  - Orphaned in FAISS: {len(orphaned_in_faiss)}")
-            logger.info(f"  - Missing from FAISS: {len(missing_from_faiss)}")
-            
-            # Step 5: Fix synchronization issues
-            if orphaned_in_faiss:
-                logger.info(f"[SYNC] Removing {len(orphaned_in_faiss)} orphaned vectors from FAISS...")
-                try:
-                    orphaned_array = np.array(list(orphaned_in_faiss), dtype=np.int64)
-                    initial_count = self.index.ntotal
-                    self.index.remove_ids(orphaned_array)
-                    final_count = self.index.ntotal
-                    removed_count = initial_count - final_count
-                    logger.info(f"[SYNC] Successfully removed {removed_count} orphaned vectors")
-                except Exception as e:
-                    logger.error(f"Error removing orphaned vectors: {e}")
-            
-            if missing_from_faiss:
-                logger.info(f"[SYNC] Found {len(missing_from_faiss)} chunks missing from FAISS")
-                logger.info(f"[SYNC] These will be added when documents are processed")
-                # Note: We don't add missing vectors here because we'd need their content
-                # They will be added when the application processes documents
-            
-            # Step 6: Final verification
-            final_mapping_count = len(self.chunk_id_to_int_map)
-            final_vector_count = self.index.ntotal
-            
-            logger.info(f"[SYNC] Final state:")
-            logger.info(f"  - Database chunks: {len(db_chunk_ids)}")
-            logger.info(f"  - FAISS vectors: {final_vector_count}")
-            logger.info(f"  - ID mappings: {final_mapping_count}")
-            
-            # Save the cleaned index
-            self.save_index()
-            
-            logger.info(f"[SYNC] FAISS-Database synchronization completed successfully")
-            
-        except Exception as e:
-            logger.error(f"Critical error in FAISS-Database synchronization: {e}")
-            import traceback
-            logger.error(f"Stack trace: {traceback.format_exc()}")
-    
-    def _clear_faiss_completely(self):
-        """Clear FAISS index completely when database is empty"""
-        try:
-            base_index = faiss.IndexFlatIP(self.dimension)
-            self.index = faiss.IndexIDMap(base_index)
-            self.chunk_id_to_int_map.clear()
-            self.int_to_chunk_id_map.clear()
-            self.save_index()
-            logger.info("[SYNC] FAISS index cleared completely")
-        except Exception as e:
-            logger.error(f"Error clearing FAISS index: {e}")
-
-    def _get_chunk_int_ids(self, chunk_ids: List[str]) -> List[int]:
-        """Convert list of chunk IDs to integer IDs"""
-        return [self._chunk_id_to_int(chunk_id) for chunk_id in chunk_ids]
-    
-    def _attempt_rebuild_from_database(self):
-        """
-        Attempt to rebuild FAISS index from existing database chunks
-        This is called when vector_index.faiss is missing but database has data
-        """
-        try:
-            # We need to import here to avoid circular imports
-            from meeting_processor import embedding_model
-            
-            if embedding_model is None:
-                logger.warning("Embedding model not available for index rebuild")
-                return
-            
-            # Connect to database and get all chunks
-            db_path = "meeting_documents.db"  # Default database path
-            if not os.path.exists(db_path):
-                logger.info("No database found to rebuild from")
-                return
-                
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            
-            # Get all chunks ordered by document and chunk index
-            cursor.execute('''
-                SELECT chunk_id, content
-                FROM chunks 
-                ORDER BY document_id, chunk_index
-            ''')
-            
-            chunks_data = cursor.fetchall()
-            conn.close()
-            
-            if not chunks_data:
-                logger.info("No chunks found in database to rebuild index from")
-                return
-                
-            logger.info(f"Found {len(chunks_data)} chunks in database. Starting FAISS index rebuild...")
-            
-            # Generate embeddings for all chunks in batches
-            chunk_ids = []
-            vectors = []
-            batch_size = 100
-            
-            for i in range(0, len(chunks_data), batch_size):
-                batch = chunks_data[i:i + batch_size]
-                batch_content = [chunk[1] for chunk in batch]
-                batch_ids = [chunk[0] for chunk in batch]
-                
-                # Generate embeddings
-                try:
-                    batch_embeddings = embedding_model.embed_documents(batch_content)
-                    vectors.extend([np.array(emb) for emb in batch_embeddings])
-                    chunk_ids.extend(batch_ids)
-                    logger.info(f"Generated embeddings for batch {i//batch_size + 1}/{(len(chunks_data)-1)//batch_size + 1}")
-                except Exception as e:
-                    logger.error(f"Error generating embeddings for batch: {e}")
-                    continue
-            
-            if vectors:
-                # Add all vectors to FAISS index
-                self.add_vectors(vectors, chunk_ids)
-                logger.info(f"Successfully rebuilt FAISS index with {len(vectors)} vectors from database")
-            else:
-                logger.warning("No vectors generated during rebuild attempt")
-                
-        except Exception as e:
-            logger.error(f"Error rebuilding FAISS index from database: {e}")
-            import traceback
-            logger.error(f"Full traceback: {traceback.format_exc()}")
+            # Create new simple IndexFlatIP
+            self.index = faiss.IndexFlatIP(self.dimension)
+            logger.info("Created new empty FAISS IndexFlatIP")
     
     def add_vectors(self, vectors: List[np.ndarray], chunk_ids: List[str]):
         """
-        Add vectors to FAISS IndexIDMap with corresponding chunk IDs
+        Add vectors to simple FAISS IndexFlatIP
         
         Args:
             vectors: List of embedding vectors
-            chunk_ids: List of corresponding chunk IDs
+            chunk_ids: List of corresponding chunk IDs (for logging only)
         """
         if not vectors:
             return
@@ -318,15 +63,10 @@ class VectorOperations:
             # Normalize vectors for cosine similarity
             faiss.normalize_L2(vectors_array)
             
-            # Convert chunk IDs to integers for IndexIDMap
-            chunk_int_ids = self._get_chunk_int_ids(chunk_ids)
-            chunk_int_ids_array = np.array(chunk_int_ids, dtype=np.int64)
+            # Add vectors to simple FAISS index (no IDs needed)
+            self.index.add(vectors_array)
             
-            # Add vectors with IDs to FAISS IndexIDMap
-            self.index.add_with_ids(vectors_array, chunk_int_ids_array)
-            
-            logger.info(f"Added {len(vectors)} vectors to FAISS IndexIDMap. Total vectors now: {self.index.ntotal}")
-            logger.info(f"Chunk IDs mapped: {chunk_ids[:3]}... -> {chunk_int_ids[:3]}...")
+            logger.info(f"Added {len(vectors)} vectors to FAISS index. Total vectors now: {self.index.ntotal}")
             
             # Automatically save index after adding vectors
             self.save_index()
@@ -337,7 +77,7 @@ class VectorOperations:
     
     def search_similar_chunks(self, query_embedding: np.ndarray, top_k: int = 20) -> List[Tuple[str, float]]:
         """
-        Search for similar chunks using FAISS IndexIDMap
+        Search for similar chunks using simple FAISS IndexFlatIP
         
         Args:
             query_embedding: Query vector
@@ -351,82 +91,67 @@ class VectorOperations:
             return []
         
         try:
-            # Debug logging for IIS troubleshooting
             logger.info(f"Starting FAISS search: index has {self.index.ntotal} vectors, requesting top {top_k}")
-            logger.info(f"ID mappings available: chunk->int: {len(self.chunk_id_to_int_map)}, int->chunk: {len(self.int_to_chunk_id_map)}")
-            
-            # Check if mappings are empty (critical for IIS environment)
-            if len(self.int_to_chunk_id_map) == 0:
-                logger.error("CRITICAL: int_to_chunk_id_map is empty! Attempting emergency rebuild...")
-                self._rebuild_id_mappings_from_database()
-                
-                if len(self.int_to_chunk_id_map) == 0:
-                    logger.error("Emergency rebuild failed - returning empty results")
-                    return []
-                else:
-                    logger.info(f"Emergency rebuild successful: {len(self.int_to_chunk_id_map)} mappings restored")
-            
-            # PRODUCTION FIX: Check for mapping mismatch (your exact issue: 711 vs 709)
-            vectors_count = self.index.ntotal
-            mappings_count = len(self.int_to_chunk_id_map)
-            
-            if vectors_count != mappings_count:
-                logger.error(f"PRODUCTION ISSUE DETECTED: {vectors_count} vectors vs {mappings_count} mappings!")
-                logger.error("This is causing all searches to return 0 results in IIS!")
-                logger.info("Attempting emergency synchronization fix...")
-                
-                # Trigger the synchronization fix
-                self._rebuild_id_mappings_from_database()
-                
-                # Verify the fix worked
-                new_mappings_count = len(self.int_to_chunk_id_map)
-                if vectors_count == new_mappings_count:
-                    logger.info(f"SUCCESS: Synchronization fixed! Both now: {vectors_count}")
-                else:
-                    logger.error(f"STILL MISALIGNED: {vectors_count} vectors vs {new_mappings_count} mappings")
-                    logger.error("This will cause search failures - manual intervention needed")
             
             # Normalize query vector
             query_vector = query_embedding.reshape(1, -1).astype('float32')
             faiss.normalize_L2(query_vector)
             
-            # Search in FAISS IndexIDMap - returns IDs directly
-            similarities, ids = self.index.search(query_vector, min(top_k, self.index.ntotal))
+            # Search in simple FAISS index - returns positions
+            similarities, positions = self.index.search(query_vector, min(top_k, self.index.ntotal))
             
-            logger.info(f"FAISS returned {len(ids[0])} raw results")
+            logger.info(f"FAISS returned {len(positions[0])} results")
             
+            # Convert vector positions to chunk_ids using database
             results = []
-            unmapped_ids = 0
-            for i, int_id in enumerate(ids[0]):
-                if int_id != -1:  # -1 indicates no result found
-                    # Convert integer ID back to chunk_id
-                    if int_id in self.int_to_chunk_id_map:
-                        chunk_id = self.int_to_chunk_id_map[int_id]
-                        similarity = float(similarities[0][i])
-                        results.append((chunk_id, similarity))
-                    else:
-                        # Count unmapped IDs but don't spam logs
-                        unmapped_ids += 1
+            if len(positions[0]) > 0:
+                results = self._map_positions_to_chunk_ids(positions[0], similarities[0])
             
-            # Log detailed results for debugging
-            if unmapped_ids > 0:
-                logger.warning(f"Found {unmapped_ids} vectors in FAISS without chunk_id mappings")
-                # Show a few unmapped IDs for debugging
-                sample_unmapped = [int(id_val) for id_val in ids[0] if id_val != -1 and id_val not in self.int_to_chunk_id_map][:3]
-                logger.warning(f"Sample unmapped IDs: {sample_unmapped}")
-            
-            logger.info(f"Final search results: {len(results)} chunks returned from {len(ids[0])} FAISS matches")
-            
-            if len(results) == 0 and len(ids[0]) > 0:
-                logger.error("CRITICAL: FAISS found matches but no chunk_ids could be mapped!")
-                logger.error("This indicates a severe mapping issue in IIS environment")
-            
+            logger.info(f"Final search results: {len(results)} chunks returned")
             return results
             
         except Exception as e:
             logger.error(f"Error searching similar chunks: {e}")
             import traceback
             logger.error(f"Stack trace: {traceback.format_exc()}")
+            return []
+    
+    def _map_positions_to_chunk_ids(self, positions: List[int], similarities: List[float]) -> List[Tuple[str, float]]:
+        """
+        Map FAISS vector positions to chunk_ids using database order
+        
+        Args:
+            positions: Vector positions from FAISS search
+            similarities: Similarity scores from FAISS search
+            
+        Returns:
+            List of (chunk_id, similarity_score) tuples
+        """
+        try:
+            db_path = "meeting_documents.db"
+            if not os.path.exists(db_path):
+                logger.error(f"Database not found at {db_path}")
+                return []
+            
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Get chunk_ids in the same order they were added to FAISS
+            cursor.execute('SELECT chunk_id FROM chunks ORDER BY rowid')
+            all_chunk_ids = [row[0] for row in cursor.fetchall()]
+            conn.close()
+            
+            results = []
+            for i, position in enumerate(positions):
+                if position != -1 and position < len(all_chunk_ids):
+                    chunk_id = all_chunk_ids[position]
+                    similarity = float(similarities[i])
+                    results.append((chunk_id, similarity))
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error mapping positions to chunk_ids: {e}")
             return []
     
     def search_similar_chunks_by_folder(self, query_embedding: np.ndarray, user_id: str, 
@@ -512,120 +237,19 @@ class VectorOperations:
         return {
             "total_vectors": self.index.ntotal,
             "dimension": self.dimension,
-            "index_type": type(self.index).__name__,
-            "active_mappings": len(self.chunk_id_to_int_map)
+            "index_type": type(self.index).__name__
         }
     
     def clear_index(self):
-        """Clear the FAISS index and metadata"""
+        """Clear the FAISS index"""
         try:
-            base_index = faiss.IndexFlatIP(self.dimension)
-            self.index = faiss.IndexIDMap(base_index)
-            self.chunk_id_to_int_map = {}
-            self.int_to_chunk_id_map = {}
-            logger.info("Cleared FAISS index and metadata")
+            self.index = faiss.IndexFlatIP(self.dimension)
+            logger.info("Cleared FAISS index")
         except Exception as e:
             logger.error(f"Error clearing index: {e}")
             raise
     
-    # Vector Deletion Operations (Direct deletion with IndexIDMap)
-    
-    def delete_document_vectors(self, document_id: str, chunk_ids: List[str]) -> bool:
-        """Delete vectors for a document using IndexIDMap remove_ids"""
-        try:
-            if not chunk_ids:
-                logger.info(f"No chunks to delete for document {document_id}")
-                return True
-            
-            logger.info(f"Deleting {len(chunk_ids)} vectors for document {document_id}")
-            
-            # Convert chunk IDs to integers for FAISS
-            chunk_int_ids = self._get_chunk_int_ids(chunk_ids)
-            chunk_int_ids_array = np.array(chunk_int_ids, dtype=np.int64)
-            
-            # Use IndexIDMap's direct deletion
-            initial_count = self.index.ntotal
-            self.index.remove_ids(chunk_int_ids_array)
-            final_count = self.index.ntotal
-            
-            # Clean up our ID mappings
-            for chunk_id in chunk_ids:
-                if chunk_id in self.chunk_id_to_int_map:
-                    int_id = self.chunk_id_to_int_map[chunk_id]
-                    del self.chunk_id_to_int_map[chunk_id]
-                    if int_id in self.int_to_chunk_id_map:
-                        del self.int_to_chunk_id_map[int_id]
-            
-            deleted_count = initial_count - final_count
-            logger.info(f"Successfully deleted {deleted_count} vectors from FAISS index. Total vectors now: {final_count}")
-            
-            # Save the updated index
-            self.save_index()
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error deleting vectors for document {document_id}: {e}")
-            return False
-    
-    def force_rebuild_index(self) -> bool:
-        """Force rebuild of IndexIDMap (not needed but kept for compatibility)"""
-        try:
-            logger.info("IndexIDMap doesn't require rebuilding - direct deletion supported")
-            return True  # Always successful since IndexIDMap handles deletions directly
-        except Exception as e:
-            logger.error(f"Error in index operation: {e}")
-            return False
-    
-    def get_deletion_stats(self) -> Dict[str, Any]:
-        """Get statistics about IndexIDMap health"""
-        try:
-            total_vectors = self.index.ntotal if self.index else 0
-            active_mappings = len(self.chunk_id_to_int_map)
-            
-            return {
-                'total_vectors': total_vectors,
-                'active_mappings': active_mappings,
-                'index_type': 'IndexIDMap',
-                'supports_direct_deletion': True,
-                'needs_rebuild': False  # IndexIDMap handles deletions directly
-            }
-        except Exception as e:
-            logger.error(f"Error getting deletion stats: {e}")
-            return {}
-    
     def rebuild_chunk_metadata(self, db_path: str):
-        """
-        Rebuild mapping for IndexIDMap compatibility (legacy method)
-        
-        Args:
-            db_path: Path to SQLite database
-        """
-        try:
-            # For IndexIDMap, we don't need to rebuild metadata in the same way
-            # But we'll load the mappings if they exist in the database
-            logger.info("IndexIDMap uses direct ID mapping - no metadata rebuild needed")
-            return
-            
-        except Exception as e:
-            logger.error(f"Error in rebuild_chunk_metadata: {e}")
-    
-    def cleanup_orphaned_vectors(self):
-        """
-        Remove vectors from FAISS that don't have corresponding chunks in database.
-        This is a maintenance operation to clean up stale data.
-        """
-        try:
-            if self.index.ntotal == 0:
-                logger.info("No vectors in FAISS index to clean up")
-                return
-            
-            logger.info(f"Starting orphaned vector cleanup. Current vectors: {self.index.ntotal}")
-            
-            # This is a complex operation for IndexIDMap and requires rebuilding
-            # For now, log the recommendation
-            logger.info("Orphaned vector cleanup requires index rebuild for IndexIDMap")
-            logger.info("Recommendation: Delete vector_index.faiss and restart application to rebuild from database")
-            
-        except Exception as e:
-            logger.error(f"Error in cleanup_orphaned_vectors: {e}")
+        """No-op method for backward compatibility - not needed in simplified architecture"""
+        logger.info("Chunk metadata rebuild not needed - using simplified IndexFlatIP")
+        pass
