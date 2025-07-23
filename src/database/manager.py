@@ -129,6 +129,30 @@ class DatabaseManager:
         """
         return self.sqlite_ops.get_chunks_by_ids(chunk_ids)
     
+    def get_document_chunks(self, document_id: str):
+        """
+        Get all chunks for a specific document
+        
+        Args:
+            document_id: Document ID
+            
+        Returns:
+            List of DocumentChunk objects for the document
+        """
+        try:
+            # Get chunk IDs for the document
+            chunk_ids = self.sqlite_ops.get_chunk_ids_by_document_id(document_id)
+            
+            # Get chunk data using existing method
+            if chunk_ids:
+                return self.get_chunks_by_ids(chunk_ids)
+            else:
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error getting chunks for document {document_id}: {e}")
+            return []
+    
     def enhanced_search_with_metadata(self, query_embedding: np.ndarray, user_id: str, 
                                     filters: Dict = None, top_k: int = 20) -> List[Dict]:
         """
@@ -172,6 +196,16 @@ class DatabaseManager:
             chunks = self.get_chunks_by_ids(chunk_ids)
             logger.info(f"[DATA] Retrieved {len(chunks) if chunks else 0} chunks from SQLite for {len(chunk_ids)} chunk IDs")
             
+            # Validate chunk ID synchronization
+            if chunks and len(chunks) != len(chunk_ids):
+                retrieved_chunk_ids = [getattr(chunk, 'chunk_id', '') for chunk in chunks]
+                missing_chunk_ids = set(chunk_ids) - set(retrieved_chunk_ids)
+                logger.warning(f"[SYNC_WARNING] Vector/SQL mismatch detected:")
+                logger.warning(f"   - Vector search found: {len(chunk_ids)} chunk IDs")
+                logger.warning(f"   - SQLite returned: {len(chunks)} chunks")
+                logger.warning(f"   - Missing chunk IDs: {list(missing_chunk_ids)[:5]}... (showing first 5)")
+                logger.warning("   -> This suggests FAISS index contains stale chunk IDs")
+            
             if not chunks:
                 logger.error("[ERROR] NO CHUNKS RETRIEVED FROM DATABASE!")
                 logger.error("   -> Vector search found chunk IDs but SQLite returned no data")
@@ -194,7 +228,8 @@ class DatabaseManager:
             
             for chunk in chunks:
                 chunk_user_id = getattr(chunk, 'user_id', None)
-                passes_filter = (chunk_user_id == user_id or user_id is None or chunk_user_id is None)
+                # Strict user filtering - only allow access to user's own data
+                passes_filter = (chunk_user_id == user_id and user_id is not None)
                 
                 if passes_filter:
                     result = {
@@ -574,15 +609,11 @@ class DatabaseManager:
     
     def get_document_metadata(self, document_id: str) -> Dict[str, Any]:
         """Get metadata for a specific document"""
-        # This method would need to be implemented in SQLiteOperations
-        # For now, return empty dict
-        return {}
+        return self.sqlite_ops.get_document_metadata(document_id)
     
     def get_project_documents(self, project_id: str, user_id: str) -> List[Dict[str, Any]]:
         """Get all documents for a specific project"""
-        # This method would need to be implemented in SQLiteOperations
-        # For now, return empty list
-        return []
+        return self.sqlite_ops.get_project_documents(project_id, user_id)
     
     # Backward Compatibility Properties
     @property
@@ -842,7 +873,7 @@ class DatabaseManager:
             logger.error(f"Error cleaning up directory {directory_path}: {e}")
     
     def rebuild_vector_index_after_deletion(self) -> bool:
-        """Force rebuild of vector index (useful for maintenance)"""
+        """Force rebuild of vector index (simplified - no rebuild needed)"""
         try:
             logger.info("Index rebuild not needed - using simplified IndexFlatIP")
             return True  # Always successful in simplified architecture

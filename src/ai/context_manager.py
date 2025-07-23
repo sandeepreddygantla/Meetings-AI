@@ -367,10 +367,10 @@ class EnhancedContextManager:
                 
                 for chunk in doc_chunks:
                     context_chunks.append({
-                        'text': chunk.get('content', ''),
+                        'text': chunk.content if hasattr(chunk, 'content') else '',
                         'document_name': doc.get('filename', 'Unknown'),
                         'document_id': doc['document_id'],
-                        'chunk_id': chunk.get('chunk_id'),
+                        'chunk_id': chunk.chunk_id if hasattr(chunk, 'chunk_id') else '',
                         'timestamp': doc.get('upload_date'),
                         'metadata': {
                             'project_id': doc.get('project_id'),
@@ -437,9 +437,71 @@ class EnhancedContextManager:
     
     def _apply_date_filters(self, documents: List[Dict], date_filters: Dict[str, Any]) -> List[Dict]:
         """Apply date-based filters to documents."""
-        # Implementation depends on the date filter format
-        # This is a placeholder for the actual date filtering logic
-        return documents
+        if not date_filters:
+            return documents
+        
+        try:
+            from datetime import datetime, timedelta
+            filtered_docs = []
+            
+            # Extract date filter parameters
+            start_date = date_filters.get('start_date')
+            end_date = date_filters.get('end_date') 
+            timeframe = date_filters.get('timeframe')
+            
+            # Convert timeframe to date range if specified
+            if timeframe and not (start_date or end_date):
+                from src.database.sqlite_operations import SQLiteOperations
+                sqlite_ops = SQLiteOperations('meeting_documents.db')
+                start_date, end_date = sqlite_ops._calculate_date_range(timeframe)
+            
+            # Filter documents by date range
+            for doc in documents:
+                doc_date = None
+                
+                # Extract date from document (try multiple fields)
+                if 'date' in doc and doc['date']:
+                    doc_date_str = doc['date']
+                elif 'upload_date' in doc and doc['upload_date']:
+                    doc_date_str = doc['upload_date']
+                elif 'created_at' in doc and doc['created_at']:
+                    doc_date_str = doc['created_at']
+                else:
+                    continue  # Skip documents without dates
+                
+                # Parse date string to datetime object
+                try:
+                    if isinstance(doc_date_str, str):
+                        # Handle ISO format with or without timezone
+                        if 'T' in doc_date_str:
+                            doc_date = datetime.fromisoformat(doc_date_str.replace('Z', '+00:00'))
+                        else:
+                            doc_date = datetime.fromisoformat(doc_date_str)
+                    elif isinstance(doc_date_str, datetime):
+                        doc_date = doc_date_str
+                    else:
+                        continue  # Skip if date format is unknown
+                except (ValueError, TypeError):
+                    continue  # Skip documents with unparseable dates
+                
+                # Apply date range filters
+                include_doc = True
+                
+                if start_date and doc_date < start_date:
+                    include_doc = False
+                    
+                if end_date and doc_date > end_date:
+                    include_doc = False
+                
+                if include_doc:
+                    filtered_docs.append(doc)
+            
+            logger.info(f"[DATE_FILTER] Filtered {len(documents)} → {len(filtered_docs)} documents using date filters: {date_filters}")
+            return filtered_docs
+            
+        except Exception as e:
+            logger.error(f"[ERROR] Date filtering failed: {e}")
+            return documents  # Return unfiltered on error
     
     def _get_filter_description(self, query_context: QueryContext) -> str:
         """Get human-readable description of applied filters."""

@@ -136,8 +136,8 @@ class VectorOperations:
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
             
-            # Get chunk_ids in the same order they were added to FAISS
-            cursor.execute('SELECT chunk_id FROM chunks ORDER BY rowid')
+            # Get chunk_ids in the same order they were added to FAISS (document processing order)
+            cursor.execute('SELECT chunk_id FROM chunks ORDER BY document_id, chunk_index')
             all_chunk_ids = [row[0] for row in cursor.fetchall()]
             conn.close()
             

@@ -3102,7 +3102,7 @@ Return only the date in YYYY-MM-DD format (e.g., 2025-07-14) or "NONE" if no dat
 
     def answer_query_with_intelligence(self, query: str, user_id: str, document_ids: List[str] = None, 
                                      project_id: str = None, meeting_id: str = None, meeting_ids: List[str] = None, 
-                                     date_filters: List[str] = None, folder_path: str = None, 
+                                     date_filters: Dict[str, Any] = None, folder_path: str = None, 
                                      context_limit: int = 10, include_context: bool = False) -> Union[str, Tuple[str, str]]:
         """Answer user query using enhanced intelligence-aware search and context reconstruction"""
         

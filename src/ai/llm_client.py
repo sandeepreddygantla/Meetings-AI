@@ -86,12 +86,9 @@ def generate_embeddings(texts: List[str]) -> List[List[float]]:
                 continue
                 
             try:
-                # Use the embedding model to generate embeddings
-                response = embedding_model.embeddings.create(
-                    input=text.strip(),
-                    model="text-embedding-3-large"
-                )
-                embedding_vector = response.data[0].embedding
+                # Use the LangChain embedding model to generate embeddings
+                text_embeddings = embedding_model.embed_documents([text.strip()])
+                embedding_vector = text_embeddings[0]
                 embeddings.append(embedding_vector)
                 
             except Exception as e:

@@ -184,142 +184,34 @@ def create_document_blueprint(base_path: str, document_service: DocumentService,
             logger.error(f"Upload stats error: {e}")
             return jsonify({'success': False, 'error': str(e)}), 500
     
-    # Document Deletion Endpoints
+    # Document Deletion Endpoints - DISABLED per user request
     @doc_bp.route(f'{base_path}/api/documents/<document_id>', methods=['DELETE'])
     @login_required
     def delete_document(document_id):
-        """Delete a single document."""
-        try:
-            success, message = document_service.delete_document(
-                document_id, current_user.user_id
-            )
-            
-            if success:
-                return jsonify({
-                    'success': True,
-                    'message': message,
-                    'document_id': document_id
-                })
-            else:
-                return jsonify({
-                    'success': False,
-                    'error': message,
-                    'document_id': document_id
-                }), 400
-                
-        except Exception as e:
-            logger.error(f"Document deletion error: {e}")
-            return jsonify({
-                'success': False,
-                'error': str(e),
-                'document_id': document_id
-            }), 500
+        """Document deletion is disabled."""
+        return jsonify({
+            'success': False,
+            'error': 'Document deletion is disabled',
+            'document_id': document_id
+        }), 403
     
     @doc_bp.route(f'{base_path}/api/documents/batch', methods=['DELETE'])
     @login_required
     def delete_multiple_documents():
-        """Delete multiple documents."""
-        try:
-            data = request.get_json()
-            if not data or 'document_ids' not in data:
-                return jsonify({
-                    'success': False,
-                    'error': 'Missing document_ids in request body'
-                }), 400
-            
-            document_ids = data['document_ids']
-            if not isinstance(document_ids, list) or not document_ids:
-                return jsonify({
-                    'success': False,
-                    'error': 'document_ids must be a non-empty list'
-                }), 400
-            
-            success, results, message = document_service.delete_multiple_documents(
-                document_ids, current_user.user_id
-            )
-            
-            response_data = {
-                'success': success,
-                'message': message,
-                'results': results
-            }
-            
-            # Return appropriate status code based on results
-            if success:
-                summary = results.get('summary', {})
-                if summary.get('failed', 0) > 0:
-                    # Partial success - some deletions failed
-                    return jsonify(response_data), 207  # Multi-Status
-                else:
-                    # Complete success
-                    return jsonify(response_data), 200
-            else:
-                # Complete failure
-                return jsonify(response_data), 400
-                
-        except Exception as e:
-            logger.error(f"Batch document deletion error: {e}")
-            return jsonify({
-                'success': False,
-                'error': str(e)
-            }), 500
+        """Batch document deletion is disabled."""
+        return jsonify({
+            'success': False,
+            'error': 'Batch document deletion is disabled'
+        }), 403
     
     @doc_bp.route(f'{base_path}/api/documents/deletable')
     @login_required
     def get_deletable_documents():
-        """Get list of documents that can be deleted."""
-        try:
-            # Parse filters from query parameters
-            filters = {}
-            
-            project_id = request.args.get('project_id')
-            if project_id:
-                filters['project_id'] = project_id
-            
-            # Date range filter
-            start_date = request.args.get('start_date')
-            end_date = request.args.get('end_date')
-            if start_date or end_date:
-                from datetime import datetime
-                date_range = []
-                if start_date:
-                    date_range.append(datetime.fromisoformat(start_date))
-                else:
-                    date_range.append(None)
-                if end_date:
-                    date_range.append(datetime.fromisoformat(end_date))
-                else:
-                    date_range.append(None)
-                filters['date_range'] = date_range
-            
-            # File size filter
-            min_size = request.args.get('min_size', type=int)
-            if min_size:
-                filters['min_size'] = min_size
-            
-            success, documents, message = document_service.get_deletable_documents(
-                current_user.user_id, filters if filters else None
-            )
-            
-            if success:
-                return jsonify({
-                    'success': True,
-                    'documents': documents,
-                    'count': len(documents),
-                    'message': message
-                })
-            else:
-                return jsonify({
-                    'success': False,
-                    'error': message
-                }), 500
-                
-        except Exception as e:
-            logger.error(f"Get deletable documents error: {e}")
-            return jsonify({
-                'success': False,
-                'error': str(e)
-            }), 500
+        """Document deletion functionality is disabled."""
+        return jsonify({
+            'success': False,
+            'error': 'Document deletion functionality is disabled'
+        }), 403
     
     @doc_bp.route(f'{base_path}/api/documents/storage/stats')
     @login_required

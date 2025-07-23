@@ -46,6 +46,78 @@ class SQLiteOperations:
             logger.warning(f"Failed to parse JSON: {json_str}, returning empty list")
             return []
     
+    def _calculate_date_range(self, timeframe: str) -> Tuple[Optional[datetime], Optional[datetime]]:
+        """Calculate start and end dates for intelligent timeframe filtering"""
+        import calendar
+        
+        now = datetime.now()
+        today = now.date()
+        
+        # Get current week boundaries (Monday to Sunday)
+        current_week_start = today - timedelta(days=today.weekday())
+        current_week_end = current_week_start + timedelta(days=6)
+        
+        # Get last week boundaries
+        last_week_start = current_week_start - timedelta(days=7)
+        last_week_end = current_week_start - timedelta(days=1)
+        
+        # Get current month boundaries
+        current_month_start = today.replace(day=1)
+        _, last_day = calendar.monthrange(today.year, today.month)
+        current_month_end = today.replace(day=last_day)
+        
+        # Get last month boundaries
+        if today.month == 1:
+            last_month_year = today.year - 1
+            last_month = 12
+        else:
+            last_month_year = today.year
+            last_month = today.month - 1
+        
+        last_month_start = today.replace(year=last_month_year, month=last_month, day=1)
+        _, last_month_last_day = calendar.monthrange(last_month_year, last_month)
+        last_month_end = today.replace(year=last_month_year, month=last_month, day=last_month_last_day)
+        
+        # Map timeframes to date ranges
+        timeframe_mapping = {
+            # Current periods
+            'current_week': (datetime.combine(current_week_start, datetime.min.time()), 
+                           datetime.combine(current_week_end, datetime.max.time())),
+            'current_month': (datetime.combine(current_month_start, datetime.min.time()), 
+                            datetime.combine(current_month_end, datetime.max.time())),
+            'current_year': (datetime(today.year, 1, 1), datetime(today.year, 12, 31, 23, 59, 59)),
+            
+            # Last periods
+            'last_week': (datetime.combine(last_week_start, datetime.min.time()), 
+                         datetime.combine(last_week_end, datetime.max.time())),
+            'last_month': (datetime.combine(last_month_start, datetime.min.time()), 
+                          datetime.combine(last_month_end, datetime.max.time())),
+            'last_year': (datetime(today.year - 1, 1, 1), datetime(today.year - 1, 12, 31, 23, 59, 59)),
+            
+            # Specific day counts
+            'last_7_days': (now - timedelta(days=7), now),
+            'last_14_days': (now - timedelta(days=14), now),
+            'last_30_days': (now - timedelta(days=30), now),
+            'last_60_days': (now - timedelta(days=60), now),
+            'last_90_days': (now - timedelta(days=90), now),
+            
+            # Extended periods
+            'last_3_months': (now - timedelta(days=90), now),
+            'last_6_months': (now - timedelta(days=180), now),
+            'last_12_months': (now - timedelta(days=365), now),
+            
+            # Recent (default to last 7 days)
+            'recent': (now - timedelta(days=7), now)
+        }
+        
+        if timeframe in timeframe_mapping:
+            start_date, end_date = timeframe_mapping[timeframe]
+            logger.info(f"Calculated date range for '{timeframe}': {start_date} to {end_date}")
+            return start_date, end_date
+        else:
+            logger.warning(f"Unknown timeframe '{timeframe}', returning no date filter")
+            return None, None
+    
     def _init_database(self):
         """Initialize SQLite database for metadata storage"""
         conn = sqlite3.connect(self.db_path)
@@ -422,8 +494,6 @@ class SQLiteOperations:
                 FROM chunks c
                 LEFT JOIN documents d ON c.document_id = d.document_id
                 WHERE c.chunk_id IN ({placeholders})
-                  AND (c.is_deleted = 0 OR c.is_deleted IS NULL)
-                  AND (d.is_deleted = 0 OR d.is_deleted IS NULL)
                 ORDER BY c.document_id, c.chunk_index
             ''', chunk_ids)
             
@@ -476,9 +546,7 @@ class SQLiteOperations:
     def get_documents_by_timeframe(self, timeframe: str, user_id: str = None):
         """Get documents filtered by intelligent timeframe calculation"""
         try:
-            from meeting_processor import EnhancedMeetingDocumentProcessor
-            processor = EnhancedMeetingDocumentProcessor()
-            start_date, end_date = processor._calculate_date_range(timeframe)
+            start_date, end_date = self._calculate_date_range(timeframe)
             
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -585,7 +653,7 @@ class SQLiteOperations:
                     SELECT document_id, filename, date, title, content_summary,
                            chunk_count, file_size, user_id, project_id, meeting_id, folder_path
                     FROM documents 
-                    WHERE user_id = ? AND (is_deleted = 0 OR is_deleted IS NULL)
+                    WHERE user_id = ?
                     ORDER BY date DESC, filename
                 ''', (user_id,))
             else:
@@ -593,7 +661,6 @@ class SQLiteOperations:
                     SELECT document_id, filename, date, title, content_summary,
                            chunk_count, file_size, user_id, project_id, meeting_id, folder_path
                     FROM documents 
-                    WHERE (is_deleted = 0 OR is_deleted IS NULL)
                     ORDER BY date DESC, filename
                 ''')
             
@@ -621,6 +688,88 @@ class SQLiteOperations:
             
         except Exception as e:
             logger.error(f"Error getting all documents: {e}")
+            return []
+    
+    def get_document_metadata(self, document_id: str) -> Dict[str, Any]:
+        """Get metadata for a specific document"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                SELECT document_id, filename, date, title, content_summary,
+                       main_topics, past_events, future_actions, participants,
+                       chunk_count, file_size, user_id, project_id, meeting_id, folder_path
+                FROM documents 
+                WHERE document_id = ?
+            ''', (document_id,))
+            
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                return {
+                    'document_id': result[0],
+                    'filename': result[1],
+                    'date': result[2],
+                    'title': result[3],
+                    'content_summary': result[4],
+                    'main_topics': self._safe_json_loads(result[5]),
+                    'past_events': self._safe_json_loads(result[6]),
+                    'future_actions': self._safe_json_loads(result[7]),
+                    'participants': self._safe_json_loads(result[8]),
+                    'chunk_count': result[9] or 0,
+                    'file_size': result[10] or 0,
+                    'user_id': result[11],
+                    'project_id': result[12],
+                    'meeting_id': result[13],
+                    'folder_path': result[14]
+                }
+            else:
+                return {}
+            
+        except Exception as e:
+            logger.error(f"Error getting document metadata: {e}")
+            return {}
+    
+    def get_project_documents(self, project_id: str, user_id: str) -> List[Dict[str, Any]]:
+        """Get all documents for a specific project"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute('''
+                SELECT document_id, filename, date, title, content_summary,
+                       chunk_count, file_size, user_id, project_id, meeting_id, folder_path
+                FROM documents 
+                WHERE project_id = ? AND user_id = ?
+                ORDER BY date DESC, filename
+            ''', (project_id, user_id))
+            
+            results = cursor.fetchall()
+            conn.close()
+            
+            documents = []
+            for row in results:
+                doc = {
+                    'document_id': row[0],
+                    'filename': row[1],
+                    'date': row[2],
+                    'title': row[3],
+                    'content_summary': row[4],
+                    'chunk_count': row[5] or 0,
+                    'file_size': row[6] or 0,
+                    'user_id': row[7],
+                    'project_id': row[8],
+                    'meeting_id': row[9],
+                    'folder_path': row[10]
+                }
+                documents.append(doc)
+            
+            return documents
+            
+        except Exception as e:
+            logger.error(f"Error getting project documents: {e}")
             return []
     
     # User Management Operations
@@ -1006,8 +1155,7 @@ class SQLiteOperations:
                        d.is_deleted
                 FROM file_hashes fh
                 LEFT JOIN documents d ON fh.document_id = d.document_id
-                WHERE fh.file_hash = ? AND fh.user_id = ? 
-                  AND (d.is_deleted = 0 OR d.is_deleted IS NULL)
+                WHERE fh.file_hash = ? AND fh.user_id = ?
                 ORDER BY fh.created_at DESC
                 LIMIT 1
             ''', (file_hash, user_id))
@@ -1026,32 +1174,7 @@ class SQLiteOperations:
                     'duplicate_type': 'active'
                 }
             
-            # Check for soft-deleted duplicates
-            cursor.execute('''
-                SELECT fh.original_filename, fh.created_at, d.document_id, d.filename as stored_filename,
-                       d.is_deleted, d.deleted_at
-                FROM file_hashes fh
-                LEFT JOIN documents d ON fh.document_id = d.document_id
-                WHERE fh.file_hash = ? AND fh.user_id = ? 
-                  AND d.is_deleted = 1
-                ORDER BY fh.created_at DESC
-                LIMIT 1
-            ''', (file_hash, user_id))
-            
-            deleted_result = cursor.fetchone()
             conn.close()
-            
-            if deleted_result:
-                # Found soft-deleted duplicate - can be restored
-                return {
-                    'original_filename': deleted_result[0],
-                    'created_at': deleted_result[1],
-                    'document_id': deleted_result[2],
-                    'stored_filename': deleted_result[3],
-                    'is_deleted': True,
-                    'deleted_at': deleted_result[5],
-                    'duplicate_type': 'soft_deleted_restorable'
-                }
             
             return None
             
@@ -1244,17 +1367,15 @@ class SQLiteOperations:
                 cursor.execute(f'SELECT COUNT(*) FROM {table}')
                 stats[f'{table}_count'] = cursor.fetchone()[0]
             
-            # Count ACTIVE documents only (exclude soft-deleted)
+            # Count all documents
             cursor.execute('''
-                SELECT COUNT(*) FROM documents 
-                WHERE is_deleted = FALSE OR is_deleted IS NULL
+                SELECT COUNT(*) FROM documents
             ''')
             stats['documents_count'] = cursor.fetchone()[0]
             
-            # Count ACTIVE chunks only (exclude soft-deleted)
+            # Count all chunks
             cursor.execute('''
-                SELECT COUNT(*) FROM chunks 
-                WHERE is_deleted = FALSE OR is_deleted IS NULL
+                SELECT COUNT(*) FROM chunks
             ''')
             stats['chunks_count'] = cursor.fetchone()[0]
             
@@ -1262,20 +1383,12 @@ class SQLiteOperations:
             cursor.execute('SELECT COUNT(*) FROM user_sessions WHERE is_active = TRUE')
             stats['active_sessions'] = cursor.fetchone()[0]
             
-            # Get recent activity (ACTIVE documents uploaded in last 24 hours)
+            # Get recent activity (documents uploaded in last 24 hours)
             cursor.execute('''
                 SELECT COUNT(*) FROM documents 
                 WHERE created_at > datetime('now', '-1 day')
-                AND (is_deleted = FALSE OR is_deleted IS NULL)
             ''')
             stats['documents_last_24h'] = cursor.fetchone()[0]
-            
-            # Add soft deletion statistics for monitoring
-            cursor.execute('SELECT COUNT(*) FROM documents WHERE is_deleted = TRUE')
-            stats['documents_soft_deleted'] = cursor.fetchone()[0]
-            
-            cursor.execute('SELECT COUNT(*) FROM chunks WHERE is_deleted = TRUE')
-            stats['chunks_soft_deleted'] = cursor.fetchone()[0]
             
             conn.close()
             return stats
@@ -1688,7 +1801,7 @@ class SQLiteOperations:
             # Verify document belongs to user
             cursor.execute('''
                 SELECT COUNT(*) FROM documents 
-                WHERE document_id = ? AND user_id = ? AND (is_deleted = 0 OR is_deleted IS NULL)
+                WHERE document_id = ? AND user_id = ?
             ''', (document_id, user_id))
             
             if cursor.fetchone()[0] == 0:
