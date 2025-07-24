@@ -363,6 +363,14 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
     <!-- Include DOMPurify for XSS protection -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.5/purify.min.js"></script>
+    
+    <!-- Configuration Script (must be loaded first) -->
+    <script src="{{ url_for('static', filename='js/config.js') }}"></script>
+    
+    <!-- Application Modules -->
+    <script src="{{ url_for('static', filename='js/modules/mentions.js') }}"></script>
+    
+    <!-- Main Application Script -->
     <script src="{{ url_for('static', filename='script.js') }}"></script>
 </body>
 </html>

@@ -15,6 +15,12 @@ let isDocumentDropdownOpen = false;
 let availableProjects = [];
 let availableMeetings = [];
 let availableFolders = [];
+
+// Loading state flags to prevent concurrent API calls
+let isLoadingDocuments = false;
+let isLoadingProjects = false;
+let isLoadingMeetings = false;
+let isLoadingFolders = false;
 let selectedMentions = [];
 let currentMentionType = 'document';
 
@@ -214,7 +220,9 @@ function formatMarkdownToHTMLBasic(text) {
 
 // Initialize the app
 // Find this line in the DOMContentLoaded event listener:
+// Main initialization on DOM ready
 document.addEventListener('DOMContentLoaded', function() {
+    console.log('[Main] DOM loaded, initializing application...');
     
     // Initialize markdown parser
     initializeMarkdownParser();
@@ -234,8 +242,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // Load persisted data and initialize UI
     loadPersistedDataAndInitializeUI();
     
-    // Initialize the app
-    initializeApp();
+    // App initialization completed - stats and data already loaded above
     
     // Setup auto-save
     setupAutoSave();
@@ -243,17 +250,24 @@ document.addEventListener('DOMContentLoaded', function() {
     // Initialize mobile fixes
     initializeMobileFixes();
     
-    // Load documents for @ mentions
-    loadDocuments();
-    
-    // Load projects and meetings for enhanced @ mentions
-    loadProjects();
-    loadMeetings();
-    loadFolders();
+    // Load all data for @ mentions (documents first, then folders)
+    Promise.all([
+        loadDocuments(),
+        loadProjects(),
+        loadMeetings()
+    ]).then(() => {
+        // Load folders after documents are ready
+        loadFolders();
+    }).catch(error => {
+        console.error('[Main] Error during initial data loading:', error);
+        // Still try to load folders with fallback
+        loadFolders();
+    });
     
     // Setup @ mention detection
-    setupAtMentionDetection();  // Re-enabled for proper @ mention functionality
+    setupAtMentionDetection();
     
+    console.log('[Main] Application initialization completed');
 });
 
 // Enhanced event listeners setup
@@ -769,21 +783,27 @@ function clearFollowUpQuestions() {
 
 // Document Selection Functions
 async function loadDocuments() {
+    // Prevent concurrent calls
+    if (isLoadingDocuments) {
+        console.log('[Main] Documents already loading, skipping...');
+        return;
+    }
+    
+    isLoadingDocuments = true;
     try {
         const response = await fetch('/meetingsai/api/documents');
         if (response.ok) {
             const data = await response.json();
             if (data.success) {
                 availableDocuments = data.documents;
-                console.log('Loaded documents:', availableDocuments);
-                console.log('Sample document:', availableDocuments[0]);
-                console.log('Sample document folder_path value:', availableDocuments[0]?.folder_path);
-                console.log('Sample document folder_path type:', typeof availableDocuments[0]?.folder_path);
-                // Also reload folders when documents are loaded to keep them in sync
-                await loadFolders();
+                console.log('[Main] Loaded documents:', availableDocuments.length);
+                // Documents loaded successfully - folders will be loaded separately
             }
         }
     } catch (error) {
+        console.error('[Main] Error loading documents:', error);
+    } finally {
+        isLoadingDocuments = false;
     }
 }
 
@@ -945,42 +965,21 @@ function showDocumentDropdown(searchText = '') {
         return;
     }
     
-    // Update header to show both options
+    // Update header for document selection only
     const header = dropdown.querySelector('.document-dropdown-header');
     if (header) {
-        header.textContent = '📁 Select Folder or 📄 File';
+        header.textContent = '📄 Select Document';
     }
     
-    
-    // Show folders first, then individual files
-    const filteredFolders = filterFolders(searchText);
+    // For @ mentions, only show individual documents (no folders)
     const filteredDocs = availableDocuments.filter(doc => 
         searchText === '' || doc.filename.toLowerCase().includes(searchText.toLowerCase())
     );
     
-    
     let html = '';
     
-    // Add folders section
-    if (filteredFolders.length > 0) {
-        html += '<div style="padding: 8px 12px; background: #F3F4F6; font-weight: 600; font-size: 12px; color: #4B5563; border-bottom: 1px solid #E5E7EB;">📁 FOLDERS (use # symbol)</div>';
-        html += filteredFolders.map(folder => `
-            <div class="document-item folder-item" data-folder-path="${folder.folder_path}" data-folder-name="${folder.display_name}">
-                <div class="document-icon">📁</div>
-                <div class="document-info">
-                    <div class="document-filename" title="${folder.display_name}">${folder.display_name}</div>
-                    <div class="document-meta">
-                        <div class="document-date">📂 ${folder.folder_path}</div>
-                        <div class="document-size">📄 ${getDocumentCountForFolder(folder.folder_path)} files • Use #${folder.display_name}> to browse files</div>
-                    </div>
-                </div>
-            </div>
-        `).join('');
-    }
-    
-    // Add files section
+    // Add files section only (no folders in @ mentions)
     if (filteredDocs.length > 0) {
-        html += '<div style="padding: 8px 12px; background: #F0F9FF; font-weight: 600; font-size: 12px; color: #1E40AF; border-bottom: 1px solid #DBEAFE; margin-top: 4px;">📄 INDIVIDUAL FILES</div>';
         html += filteredDocs.map(doc => {
             const isSelected = selectedDocuments.some(selected => selected.document_id === doc.document_id);
             const date = new Date(doc.date).toLocaleDateString();
@@ -1913,47 +1912,78 @@ function selectSingleFile(doc) {
 }
 
 async function loadProjects() {
+    // Prevent concurrent calls
+    if (isLoadingProjects) {
+        console.log('[Main] Projects already loading, skipping...');
+        return;
+    }
+    
+    isLoadingProjects = true;
     try {
         const response = await fetch('/meetingsai/api/projects');
         if (response.ok) {
             const data = await response.json();
             if (data.success && data.projects) {
                 availableProjects = data.projects;
+                console.log('[Main] Loaded projects:', availableProjects.length);
             }
         }
     } catch (error) {
+        console.error('[Main] Error loading projects:', error);
+    } finally {
+        isLoadingProjects = false;
     }
 }
 
 async function loadMeetings() {
+    // Prevent concurrent calls
+    if (isLoadingMeetings) {
+        console.log('[Main] Meetings already loading, skipping...');
+        return;
+    }
+    
+    isLoadingMeetings = true;
     try {
         const response = await fetch('/meetingsai/api/meetings');
         if (response.ok) {
             const data = await response.json();
             if (data.success && data.meetings) {
                 availableMeetings = data.meetings;
+                console.log('[Main] Loaded meetings:', availableMeetings.length);
             }
         }
     } catch (error) {
+        console.error('[Main] Error loading meetings:', error);
+    } finally {
+        isLoadingMeetings = false;
     }
 }
 
 // Load available folders from documents
 async function loadFolders() {
+    // Prevent concurrent calls
+    if (isLoadingFolders) {
+        console.log('[Main] Folders already loading, skipping...');
+        return;
+    }
+    
+    isLoadingFolders = true;
     try {
         // Ensure projects are loaded first
         if (!availableProjects || availableProjects.length === 0) {
             await loadProjects();
         }
         
-        const response = await fetch('/meetingsai/api/documents');
-        if (response.ok) {
-            const data = await response.json();
+        // Use already loaded documents instead of making another API call
+        if (availableDocuments && availableDocuments.length > 0) {
+            console.log('[Main] Using cached documents for folder loading:', availableDocuments.length);
+            const data = { success: true, documents: availableDocuments };
+            
             if (data.success && data.documents) {
                 // Extract unique folder paths from documents
-                console.log('All documents in loadFolders:', data.documents);
+                console.log('[Main] All documents in loadFolders:', data.documents.length);
                 data.documents.forEach((doc, i) => {
-                    console.log(`Doc ${i}: ${doc.filename}, folder_path: "${doc.folder_path}" (type: ${typeof doc.folder_path}), project: ${doc.project_name}`);
+                    console.log(`[Main] Doc ${i}: ${doc.filename}, folder_path: "${doc.folder_path}" (type: ${typeof doc.folder_path}), project: ${doc.project_name}, project_id: ${doc.project_id}`);
                 });
                 
                 const docsWithFolders = data.documents.filter(doc => doc.folder_path);
@@ -1983,12 +2013,15 @@ async function loadFolders() {
                         let folderName;
                         let actualFolderPath = `user_folder/project_${projectId}`; // fallback
                         
+                        console.log(`[Main] Processing project group: ${projectId}, documents: ${projectGroups[projectId].length}`);
+                        
                         if (projectId === 'default') {
                             folderName = 'Default Folder';
                         } else {
                             // Find the actual project name from availableProjects
                             const project = availableProjects.find(p => p.project_id === projectId);
                             folderName = project ? project.project_name : `Project ${index + 1}`;
+                            console.log(`[Main] Project ${projectId} -> name: ${folderName}`);
                             
                             // Use actual folder_path from documents if available
                             const docWithFolderPath = projectGroups[projectId].find(doc => doc.folder_path);
@@ -1999,28 +2032,35 @@ async function loadFolders() {
                                 console.log(`Project "${folderName}" (${projectId}) - No folder_path found, using fallback: ${actualFolderPath}`);
                             }
                         }
-                        return {
+                        const folderObj = {
                             folder_path: actualFolderPath,
                             folder_name: folderName,
                             display_name: folderName,
                             project_id: projectId, // Store the actual project_id for matching
                             documents: projectGroups[projectId] // Store the documents in this folder
                         };
+                        
+                        console.log(`[Main] Created folder: ${folderName}, path: ${actualFolderPath}, docs: ${folderObj.documents.length}`);
+                        return folderObj;
                     });
                     
-                    // Always add a "Default Folder" that contains all documents if it doesn't exist
+                    // Only add a "Default Folder" if there are documents without project_id
+                    const documentsWithoutProject = data.documents.filter(doc => !doc.project_id || doc.project_id === 'default');
                     const hasDefaultFolder = projectFolders.some(f => f.display_name === 'Default Folder');
-                    if (!hasDefaultFolder) {
+                    
+                    if (!hasDefaultFolder && documentsWithoutProject.length > 0) {
                         projectFolders.unshift({
                             folder_path: 'user_folder/project_default',
                             folder_name: 'Default Folder',
                             display_name: 'Default Folder',
                             project_id: 'default',
-                            documents: data.documents // All documents
+                            documents: documentsWithoutProject // Only documents without project_id
                         });
+                        console.log(`[Main] Created Default Folder with ${documentsWithoutProject.length} documents`);
                     }
                     
                     availableFolders = projectFolders;
+                    console.log(`[Main] Final availableFolders:`, availableFolders.map(f => `${f.display_name} (${f.documents.length} docs)`));
                 } else {
                     availableFolders = folderPaths.map(path => {
                         const parts = path.split('/');
@@ -2055,12 +2095,17 @@ async function loadFolders() {
                 ];
             }
         } else {
-            // Create default folders even if API fails
+            // Documents not loaded yet, use fallback folders
+            console.log('[Main] Documents not loaded yet for folders, using fallback folders...');
+            // Don't try to load documents here to avoid circular dependency
+            
+            // Fallback: Create default folders even if documents can't be loaded
             availableFolders = [
                 {
                     folder_path: 'user_folder/project_default',
                     folder_name: 'Default Folder',
-                    display_name: 'Default Folder'
+                    display_name: 'Default Folder',
+                    documents: []
                 }
             ];
         }
@@ -2073,6 +2118,8 @@ async function loadFolders() {
                 display_name: 'Default Folder'
             }
         ];
+    } finally {
+        isLoadingFolders = false;
     }
     
     // Ensure we always have at least one folder
@@ -2465,27 +2512,8 @@ function exportConversations() {
     showNotification('Conversations exported successfully!');
 }
 
-async function initializeApp() {
-    try {
-        const response = await fetch('/meetingsai/api/test');
-        if (response.ok) {
-            const data = await response.json();
-            if (data.success) {
-                // Load stats only once during initialization
-                await loadSystemStats(false); // Don't force refresh on startup
-                
-                // Only show welcome screen if no conversation is loaded
-                if (conversationHistory.length === 0 && data.status.vector_size > 0) {
-                    // Don't hide welcome screen automatically if user has documents but no conversation
-                }
-            }
-        }
-    } catch (error) {
-    }
-    
-    // Initialize conversation list
-    updateConversationList();
-}
+// Removed initializeApp() function - functionality moved to main initialization
+// The updateConversationList() call is now handled in loadPersistedDataAndInitializeUI()
 
 // Enhanced regenerate function that maintains conversation context
 function regenerateResponse() {
@@ -2562,7 +2590,7 @@ function showUploadModal() {
     const modal = document.getElementById('upload-modal');
     if (modal) {
         loadProjects(); // Load projects when modal is shown
-        loadDocuments(); // Load existing documents for duplicate checking
+        // Documents already loaded during initialization - no need to reload
         modal.classList.add('active');
         document.body.style.overflow = 'hidden';
         
@@ -3064,6 +3092,7 @@ async function loadSystemStats(forceRefresh = false) {
                 // Cache the stats
                 statsCache = data.stats;
                 lastStatsUpdate = Date.now();
+                console.log('[Main] Loaded stats');
                 return data.stats;
             }
         }
@@ -3789,22 +3818,22 @@ function confirmDelete() {
 // Authentication Functions
 async function checkAuthenticationStatus() {
     try {
-        console.log('Checking authentication status...');
+        console.log('[Main] Checking authentication status...');
         const response = await fetch('/meetingsai/api/auth/status');
-        console.log('Auth response status:', response.status);
+        console.log('[Main] Auth response status:', response.status);
         
         if (response.ok) {
             const data = await response.json();
-            console.log('Auth response data:', data);
+            console.log('[Main] Auth response data:', data);
             if (data.authenticated) {
                 displayUserInfo(data.user);
-                console.log('Authentication successful');
+                console.log('[Main] Authentication successful');
                 return true;
             } else {
-                console.log('Not authenticated:', data);
+                console.log('[Main] Not authenticated:', data);
             }
         } else {
-            console.log('Auth response not ok:', response.status, response.statusText);
+            console.log('[Main] Auth response not ok:', response.status, response.statusText);
         }
         // If not authenticated, redirect to login
         console.log('Redirecting to login...');
@@ -4318,8 +4347,57 @@ function renderDocumentList(documents) {
 
     const documentsHTML = documents.map(doc => {
         const fileSize = formatFileSize(doc.file_size || 0);
-        const uploadDate = new Date(doc.created_at).toLocaleString();
-        const projectName = doc.project_name || 'No Project';
+        
+        // Use meeting date (doc.date) instead of upload date (doc.created_at)
+        let meetingDate = 'Unknown Date';
+        if (doc.date) {
+            try {
+                const dateObj = new Date(doc.date);
+                if (!isNaN(dateObj.getTime())) {
+                    meetingDate = dateObj.toLocaleDateString();
+                    console.log(`[DocMgmt] Document ${doc.filename}: Meeting date = ${meetingDate} (from ${doc.date})`);
+                } else {
+                    throw new Error('Invalid date object');
+                }
+            } catch (e) {
+                console.warn(`[DocMgmt] Invalid meeting date for ${doc.filename}:`, doc.date);
+                // Fallback to upload date if meeting date is invalid
+                if (doc.created_at) {
+                    try {
+                        meetingDate = new Date(doc.created_at).toLocaleDateString() + ' (upload)';
+                    } catch (e2) {
+                        meetingDate = 'Invalid Date';
+                    }
+                } else {
+                    meetingDate = 'No Date Available';
+                }
+            }
+        } else if (doc.created_at) {
+            // Fallback to upload date if no meeting date
+            try {
+                meetingDate = new Date(doc.created_at).toLocaleDateString() + ' (upload)';
+                console.log(`[DocMgmt] Document ${doc.filename}: Using upload date = ${meetingDate}`);
+            } catch (e) {
+                meetingDate = 'Invalid Date';
+            }
+        }
+        
+        // Improve project name handling - try multiple sources
+        let projectName = 'No Project';
+        if (doc.project_name && doc.project_name.trim()) {
+            projectName = doc.project_name;
+            console.log(`[DocMgmt] Document ${doc.filename}: Using doc.project_name = ${projectName}`);
+        } else if (doc.project_id && doc.project_id !== 'default') {
+            // Try to find project name from availableProjects if project_name is missing
+            const project = window.availableProjects?.find(p => p.project_id === doc.project_id);
+            projectName = project ? project.project_name : `Project ${doc.project_id}`;
+            console.log(`[DocMgmt] Document ${doc.filename}: Resolved project_id ${doc.project_id} to ${projectName}`);
+        } else if (doc.project_id === 'default' || !doc.project_id) {
+            projectName = 'Default Project';
+            console.log(`[DocMgmt] Document ${doc.filename}: Using Default Project (project_id: ${doc.project_id})`);
+        } else {
+            console.warn(`[DocMgmt] Document ${doc.filename}: Could not resolve project (project_id: ${doc.project_id}, project_name: ${doc.project_name})`);
+        }
         
         return `
             <div class="document-item" data-document-id="${doc.document_id}">
@@ -4335,7 +4413,7 @@ function renderDocumentList(documents) {
                         <span class="meta-item">📁 ${escapeHtml(projectName)}</span>
                         <span class="meta-item">📏 ${fileSize}</span>
                         <span class="meta-item">📊 ${doc.chunk_count || 0} chunks</span>
-                        <span class="meta-item">📅 ${uploadDate}</span>
+                        <span class="meta-item">📅 ${meetingDate}</span>
                     </div>
                     <div class="document-id">ID: ${doc.document_id}</div>
                 </div>
@@ -4550,10 +4628,33 @@ async function confirmDocumentDeletion() {
     }
 }
 
-// Refresh document list
+// Refresh document list while preserving current filters
 async function refreshDocumentList() {
     showNotification('🔄 Refreshing document list...', 'info');
+    
+    // Get current filter state before refreshing
+    const currentSearchTerm = document.getElementById('document-search')?.value || '';
+    const currentProjectFilter = document.getElementById('project-filter')?.value || '';
+    
+    // Reload all data
     await loadDocumentManagementData();
+    
+    // Restore filter state
+    if (currentSearchTerm) {
+        const searchInput = document.getElementById('document-search');
+        if (searchInput) searchInput.value = currentSearchTerm;
+    }
+    
+    if (currentProjectFilter) {
+        const projectFilterSelect = document.getElementById('project-filter');
+        if (projectFilterSelect) projectFilterSelect.value = currentProjectFilter;
+    }
+    
+    // Apply filters to show the correctly filtered results
+    if (currentSearchTerm || currentProjectFilter) {
+        filterDocumentList();
+    }
+    
     clearDocumentSelection();
 }
 
@@ -4583,19 +4684,7 @@ function filterDocumentList() {
     clearDocumentSelection();
 }
 
-// Add event listeners for search and filter
-document.addEventListener('DOMContentLoaded', function() {
-    const searchInput = document.getElementById('document-search');
-    const projectFilter = document.getElementById('project-filter');
-    
-    if (searchInput) {
-        searchInput.addEventListener('input', filterDocumentList);
-    }
-    
-    if (projectFilter) {
-        projectFilter.addEventListener('change', filterDocumentList);
-    }
-});
+// Search and filter event listeners will be handled by AppInitializer
 
 // Add document management modal to close on outside click
 document.addEventListener('click', function(event) {

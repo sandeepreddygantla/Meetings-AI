@@ -56,6 +56,31 @@ class MentionHandler {
             console.error('Error loading mention data:', error);
         }
     }
+
+    /**
+     * Set preloaded data from app initializer to avoid API calls
+     */
+    setPreloadedData(data) {
+        console.log('[Mentions] Using preloaded data, skipping API calls');
+        
+        if (data.projects) {
+            this.availableProjects = data.projects;
+            console.log('[Mentions] Projects set from preloaded data:', this.availableProjects.length);
+        }
+        
+        if (data.meetings) {
+            this.availableMeetings = data.meetings;
+            console.log('[Mentions] Meetings set from preloaded data:', this.availableMeetings.length);
+        }
+        
+        if (data.documents) {
+            this.availableDocuments = data.documents;
+            console.log('[Mentions] Documents set from preloaded data:', this.availableDocuments.length);
+        }
+        
+        // Process folders from documents
+        this.loadFolders();
+    }
     
     /**
      * Load projects data
@@ -66,7 +91,7 @@ class MentionHandler {
             if (response.ok) {
                 const data = await response.json();
                 this.availableProjects = data.projects || [];
-                console.log('Projects loaded:', this.availableProjects.length);
+                console.log('[Mentions] Projects loaded:', this.availableProjects.length);
             }
         } catch (error) {
             console.error('Error loading projects:', error);
@@ -74,7 +99,7 @@ class MentionHandler {
     }
     
     /**
-     * Load meetings data
+     * Load meetings data  
      */
     async loadMeetings() {
         try {
@@ -82,7 +107,7 @@ class MentionHandler {
             if (response.ok) {
                 const data = await response.json();
                 this.availableMeetings = data.meetings || [];
-                console.log('Meetings loaded:', this.availableMeetings.length);
+                console.log('[Mentions] Meetings loaded:', this.availableMeetings.length);
             }
         } catch (error) {
             console.error('Error loading meetings:', error);
@@ -98,12 +123,13 @@ class MentionHandler {
             if (response.ok) {
                 const data = await response.json();
                 this.availableDocuments = data.documents || [];
-                console.log('Documents loaded:', this.availableDocuments.length);
+                console.log('[Mentions] Documents loaded:', this.availableDocuments.length);
             }
         } catch (error) {
             console.error('Error loading documents:', error);
         }
     }
+
     
     /**
      * Load folders data (placeholder - would need folder API)
@@ -279,31 +305,21 @@ class MentionHandler {
     }
     
     /**
-     * Show mention dropdown
+     * Show mention dropdown - DISABLED: Main script.js handles enhanced dropdowns
      */
     showDropdown(mention) {
-        this.currentMentionType = mention.type;
-        this.selectedIndex = -1;
-        
-        // Get suggestions based on mention type
-        let suggestions = this.getSuggestions(mention);
-        
-        // Create or update dropdown
-        let dropdown = document.querySelector('.mention-dropdown');
-        if (!dropdown) {
-            dropdown = this.createDropdown();
-        }
-        
-        this.populateDropdown(dropdown, suggestions, mention);
-        this.positionDropdown(dropdown);
-        
-        this.isDropdownOpen = true;
+        // Disabled: The main script.js already handles enhanced dropdowns
+        // This prevents the duplicate dropdown that shows "No results found"
+        console.log('[MentionHandler] showDropdown() disabled - using main script enhanced dropdown');
+        return;
     }
     
     /**
-     * Hide mention dropdown
+     * Hide mention dropdown - DISABLED: Main script.js handles enhanced dropdowns
      */
     hideDropdown() {
+        // Disabled: The main script.js already handles enhanced dropdowns
+        // Clean up any leftover mention-dropdown elements just in case
         const dropdown = document.querySelector('.mention-dropdown');
         if (dropdown) {
             dropdown.remove();
