@@ -2272,7 +2272,17 @@ class EnhancedMeetingDocumentProcessor:
             raise
     
     def extract_date_from_filename(self, filename: str, content: str = None) -> datetime:
-        """Extract date from filename pattern with multiple formats, fallback to content"""
+        """
+        Comprehensive date extraction with multiple methods and LLM validation:
+        1. Try filename patterns first
+        2. Try content extraction (top 10 lines)
+        3. Try LLM extraction as fallback
+        4. Validate final result with LLM
+        """
+        extracted_date = None
+        extraction_method = "none"
+        
+        # 1. Try filename patterns first
         patterns = [
             r'(\d{8})_(\d{6})',  # YYYYMMDD_HHMMSS
             r'(\d{8})',          # YYYYMMDD
@@ -2285,107 +2295,241 @@ class EnhancedMeetingDocumentProcessor:
             if match:
                 try:
                     if '_' in match.group(0):
-                        return datetime.strptime(match.group(0), "%Y%m%d_%H%M%S")
+                        extracted_date = datetime.strptime(match.group(0), "%Y%m%d_%H%M%S")
                     elif '-' in match.group(0):
-                        return datetime.strptime(match.group(0), "%Y-%m-%d")
+                        extracted_date = datetime.strptime(match.group(0), "%Y-%m-%d")
                     elif '/' in match.group(0):
-                        return datetime.strptime(match.group(0), "%m/%d/%Y")
+                        extracted_date = datetime.strptime(match.group(0), "%m/%d/%Y")
                     else:
-                        return datetime.strptime(match.group(0), "%Y%m%d")
+                        extracted_date = datetime.strptime(match.group(0), "%Y%m%d")
+                    
+                    extraction_method = "filename"
+                    logger.info(f"Extracted date from filename: {extracted_date}")
+                    break
                 except ValueError:
                     continue
         
-        # Fallback: Extract date from file content if provided
-        if content:
+        # 2. Fallback: Extract date from file content if no filename date found
+        if not extracted_date and content:
             try:
                 extracted_date = self.extract_date_from_content(content)
                 if extracted_date:
+                    extraction_method = "content"
                     logger.info(f"Extracted date from content for {filename}: {extracted_date}")
-                    return extracted_date
             except Exception as e:
                 logger.warning(f"Failed to extract date from content for {filename}: {e}")
         
-        logger.warning(f"Could not extract date from filename or content: {filename}, using current date")
-        return datetime.now()
+        # 3. Validate the extracted date with LLM if we have both date and content
+        if extracted_date and content:
+            try:
+                validated_date = self.validate_extracted_date(filename, extracted_date, content)
+                if validated_date != extracted_date:
+                    logger.info(f"LLM validation corrected date: {extracted_date} → {validated_date}")
+                    extraction_method += "+validated"
+                extracted_date = validated_date
+            except Exception as e:
+                logger.debug(f"Date validation failed: {e}")
+        
+        # 4. Final fallback: use current date if nothing worked
+        if not extracted_date:
+            logger.warning(f"Could not extract date from filename or content: {filename}, using current date")
+            extracted_date = datetime.now()
+            extraction_method = "fallback"
+        else:
+            logger.info(f"Final extracted date for {filename}: {extracted_date} (method: {extraction_method})")
+        
+        return extracted_date
     
     def extract_date_from_content(self, content: str) -> Optional[datetime]:
-        """Extract date from meeting file content (line 2 typically contains date)"""
+        """Extract date from meeting file content - checks top 10 lines comprehensively"""
+        if not content:
+            return None
+            
         lines = content.strip().split('\n')
         
-        if len(lines) < 2:
-            return None
+        # Check TOP 10 LINES for date (not just line 2)
+        lines_to_check = lines[:10] if len(lines) >= 10 else lines
         
-        # Line 2 typically contains the date in format: "July 14, 2025, 3:00PM" or "June 27, 2025, 230 PM"
-        date_line = lines[1].strip()
+        logger.debug(f"Checking top {len(lines_to_check)} lines for date extraction")
         
-        # Common date patterns in meeting transcripts
+        # Enhanced date patterns for meeting transcripts
         date_patterns = [
-            r'([A-Za-z]+\s+\d{1,2},\s+\d{4})',  # "July 14, 2025" or "June 27, 2025"
-            r'(\d{1,2}/\d{1,2}/\d{4})',         # "7/14/2025"
-            r'(\d{4}-\d{2}-\d{2})',             # "2025-07-14"
-            r'(\d{1,2}-\d{1,2}-\d{4})',         # "7-14-2025"
+            # Full month names
+            r'([A-Za-z]+\s+\d{1,2},\s+\d{4})',        # "July 14, 2025", "June 27, 2025"
+            r'([A-Za-z]+\s+\d{1,2}\s+\d{4})',         # "July 14 2025" (no comma)
+            
+            # Numeric formats  
+            r'(\d{1,2}/\d{1,2}/\d{4})',               # "7/14/2025", "07/14/2025"
+            r'(\d{4}-\d{2}-\d{2})',                   # "2025-07-14"
+            r'(\d{1,2}-\d{1,2}-\d{4})',               # "7-14-2025"
+            r'(\d{1,2}\.\d{1,2}\.\d{4})',             # "7.14.2025" (European style)
+            
+            # Time included patterns (will extract just the date part)
+            r'([A-Za-z]+\s+\d{1,2},\s+\d{4}),?\s+\d{1,2}:\d{2}', # "June 27, 2025, 2:30"
+            r'(\d{1,2}/\d{1,2}/\d{4})\s+\d{1,2}:\d{2}',          # "6/27/2025 2:30"
         ]
         
-        for pattern in date_patterns:
-            match = re.search(pattern, date_line)
-            if match:
-                date_str = match.group(1)
-                try:
-                    # Try different parsing formats
-                    parse_formats = [
-                        "%B %d, %Y",    # "July 14, 2025"
-                        "%b %d, %Y",    # "Jul 14, 2025"
-                        "%m/%d/%Y",     # "7/14/2025"
-                        "%Y-%m-%d",     # "2025-07-14"
-                        "%m-%d-%Y",     # "7-14-2025"
-                    ]
+        for line_num, line in enumerate(lines_to_check, 1):
+            date_line = line.strip()
+            
+            if not date_line:
+                continue
+            
+            logger.debug(f"Checking line {line_num}: {date_line[:100]}{'...' if len(date_line) > 100 else ''}")
+            
+            for pattern in date_patterns:
+                match = re.search(pattern, date_line)
+                if match:
+                    date_str = match.group(1)
                     
-                    for fmt in parse_formats:
-                        try:
-                            return datetime.strptime(date_str, fmt)
-                        except ValueError:
-                            continue
-                            
-                except Exception as e:
-                    logger.debug(f"Failed to parse date '{date_str}' with standard formats: {e}")
-                    continue
+                    # Clean up the date string (remove time, extra spaces, etc.)
+                    date_str = re.sub(r',?\s+\d{1,2}:\d{2}.*$', '', date_str)  # Remove time
+                    date_str = date_str.strip(' ,')
+                    
+                    logger.debug(f"Found potential date: '{date_str}' on line {line_num}")
+                    
+                    try:
+                        # Enhanced parsing formats
+                        parse_formats = [
+                            "%B %d, %Y",    # "July 14, 2025"
+                            "%B %d %Y",     # "July 14 2025"
+                            "%b %d, %Y",    # "Jul 14, 2025" 
+                            "%b %d %Y",     # "Jul 14 2025"
+                            "%m/%d/%Y",     # "7/14/2025"
+                            "%Y-%m-%d",     # "2025-07-14"
+                            "%m-%d-%Y",     # "7-14-2025" 
+                            "%m.%d.%Y",     # "7.14.2025"
+                        ]
+                        
+                        for fmt in parse_formats:
+                            try:
+                                parsed_date = datetime.strptime(date_str, fmt)
+                                logger.info(f"Successfully extracted date from content: {parsed_date} (line {line_num}, format: {fmt})")
+                                return parsed_date
+                            except ValueError:
+                                continue
+                                
+                    except Exception as e:
+                        logger.debug(f"Parse error for '{date_str}': {e}")
+                        continue
         
         # If no standard patterns work, try using AI to extract the date
+        logger.debug("Pattern matching failed, trying AI extraction")
         return self.ai_extract_date_from_content(content)
     
     def ai_extract_date_from_content(self, content: str) -> Optional[datetime]:
         """Use AI to extract meeting date from content when pattern matching fails"""
+        if not self.llm:
+            logger.debug("LLM not available for AI date extraction")
+            return None
+            
         try:
-            # Get first few lines which typically contain metadata
-            first_lines = '\n'.join(content.strip().split('\n')[:5])
+            # Get first 10 lines for AI analysis (same as pattern matching)
+            first_lines = '\n'.join(content.strip().split('\n')[:10])
             
             extraction_prompt = f"""
-Extract the meeting date from this content. Return only the date in YYYY-MM-DD format.
+Extract the meeting date from this document content. Look carefully at all the lines provided.
 
-Content:
+Content (first 10 lines):
 {first_lines}
 
-Return only the date in YYYY-MM-DD format (e.g., 2025-07-14) or "NONE" if no date is found.
+Instructions:
+1. Look for any meeting date mentioned in the content
+2. The date might be in various formats: "July 14, 2025", "7/14/2025", "2025-07-14", etc.
+3. Ignore duration times like "31m 31s" - look for actual calendar dates
+4. Return ONLY the date in YYYY-MM-DD format
+5. If no clear meeting date is found, return "NONE"
+
+Example responses:
+- If you see "June 27, 2025, 2:30 PM" → return "2025-06-27"
+- If you see "Meeting on 7/14/2025" → return "2025-07-14"  
+- If no date found → return "NONE"
+
+Return only the date in YYYY-MM-DD format or "NONE":
 """
 
             messages = [
-                SystemMessage(content="You are a date extraction expert. Extract meeting dates accurately and return them in YYYY-MM-DD format only."),
+                SystemMessage(content="You are a date extraction expert. Extract meeting dates accurately from document content and return them in YYYY-MM-DD format only. Be very careful to identify actual meeting dates, not durations or other time references."),
                 HumanMessage(content=extraction_prompt)
             ]
             
             response = self.llm.invoke(messages)
             date_str = response.content.strip()
             
+            logger.debug(f"AI date extraction response: '{date_str}'")
+            
             # Validate the response format
             if re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
-                return datetime.strptime(date_str, "%Y-%m-%d")
+                parsed_date = datetime.strptime(date_str, "%Y-%m-%d")
+                logger.info(f"AI successfully extracted date from content: {parsed_date}")
+                return parsed_date
             else:
-                logger.debug(f"AI date extraction returned invalid format: {date_str}")
+                logger.debug(f"AI date extraction returned invalid format or NONE: {date_str}")
                 return None
                 
         except Exception as e:
             logger.warning(f"AI date extraction failed: {e}")
             return None
+    
+    def validate_extracted_date(self, filename: str, extracted_date: datetime, content: str) -> datetime:
+        """Use LLM to validate if the extracted date makes sense for this document"""
+        if not self.llm or not content:
+            return extracted_date  # Return as-is if no LLM or content
+        
+        try:
+            # Get first 10 lines for validation context
+            first_lines = '\n'.join(content.strip().split('\n')[:10])
+            
+            validation_prompt = f"""
+I extracted a date of {extracted_date.strftime('%B %d, %Y')} from this document.
+
+Document filename: {filename}
+Document content (first 10 lines):
+{first_lines}
+
+Please validate:
+1. Does this date make sense as the meeting date for this document?
+2. Is there a different/better date mentioned in the content?
+
+Respond with ONLY one of these formats:
+- "VALID" - if the extracted date is correct
+- "INVALID: YYYY-MM-DD" - if you found a better date (provide the better date)
+- "INVALID: NONE" - if the date seems wrong but you can't find a better one
+
+Examples:
+- If extracted 2025-07-14 and content shows "July 14, 2025" → "VALID"
+- If extracted 2025-07-14 but content shows "June 27, 2025" → "INVALID: 2025-06-27"  
+- If extracted date seems wrong but no clear alternative → "INVALID: NONE"
+"""
+
+            messages = [
+                SystemMessage(content="You are a meeting date validation expert. Validate whether extracted dates match the actual meeting date mentioned in document content."),
+                HumanMessage(content=validation_prompt)
+            ]
+            
+            response = self.llm.invoke(messages)
+            result = response.content.strip()
+            
+            logger.debug(f"Date validation response: '{result}'")
+            
+            if result == "VALID":
+                logger.debug("LLM confirmed extracted date is valid")
+                return extracted_date
+            elif result.startswith("INVALID: ") and result != "INVALID: NONE":
+                # LLM found a better date
+                better_date_str = result.replace("INVALID: ", "")
+                if re.match(r'^\d{4}-\d{2}-\d{2}$', better_date_str):
+                    better_date = datetime.strptime(better_date_str, "%Y-%m-%d")
+                    logger.info(f"LLM suggested better date: {extracted_date} → {better_date}")
+                    return better_date
+            
+            # Invalid but no better alternative, or other cases
+            logger.debug("LLM validation failed or found no better alternative")
+            return extracted_date
+            
+        except Exception as e:
+            logger.debug(f"Date validation error: {e}")
+            return extracted_date  # Return original on error
     
     def read_document_content(self, file_path: str) -> str:
         """Read document content from file"""
@@ -4180,11 +4324,14 @@ Document: {chunk['filename']} ({chunk['date']})
                 project_id, meeting_id, document_id
             )
             
+            # Extract actual meeting date from filename
+            extracted_date = self.extract_date_from_filename(filename, content)
+            
             # Create MeetingDocument object for processing
             meeting_doc = MeetingDocument(
                 document_id=document_id,
                 filename=filename,
-                date=datetime.now(),
+                date=extracted_date,
                 title=filename,
                 content=content,
                 content_summary="",
