@@ -284,12 +284,8 @@ function setupEventListeners() {
         fileInput.addEventListener('change', handleFileSelect);
     }
 
-    const uploadArea = document.getElementById('upload-area');
-    if (uploadArea) {
-        uploadArea.addEventListener('dragover', handleDragOver);
-        uploadArea.addEventListener('dragleave', handleDragLeave);
-        uploadArea.addEventListener('drop', handleDrop);
-    }
+    // Upload area event listeners are now set up when the modal is shown
+    // in setupUploadAreaEventListeners() function
 
     // Enhanced page unload handling
     window.addEventListener('beforeunload', function(e) {
@@ -505,6 +501,27 @@ async function sendMessage() {
     // Parse message for document selection and enhanced @ mentions
     const { cleanMessage, documentIds, projectIds, meetingIds, dateFilters, folderPath } = parseMessageForDocuments(message);
     
+    // If cleanMessage is empty but we have filters (mentions), provide a default query
+    let queryMessage = cleanMessage;
+    if (!cleanMessage.trim() && (documentIds || projectIds || meetingIds || folderPath || dateFilters)) {
+        if (folderPath) {
+            queryMessage = "Please summarize the content from this folder.";
+        } else if (documentIds && documentIds.length === 1) {
+            queryMessage = "Please summarize this document.";
+        } else if (documentIds && documentIds.length > 1) {
+            queryMessage = "Please summarize these documents.";
+        } else if (projectIds) {
+            queryMessage = "Please summarize the documents from this project.";
+        } else if (meetingIds) {
+            queryMessage = "Please summarize this meeting.";
+        } else if (dateFilters) {
+            queryMessage = "Please summarize the documents from this time period.";
+        } else {
+            queryMessage = "Please provide information from the selected documents.";
+        }
+        console.log('Generated default query for mention-only input:', queryMessage);
+    }
+    
     // Debug logging
     console.log('Parsed message data:', { cleanMessage, documentIds, projectIds, meetingIds, dateFilters, folderPath });
     if (folderPath) {
@@ -535,7 +552,7 @@ async function sendMessage() {
     showTypingIndicator();
 
     try {
-        const requestBody = { message: cleanMessage };
+        const requestBody = { message: queryMessage };
         if (documentIds) {
             requestBody.document_ids = documentIds;
         }
@@ -686,13 +703,63 @@ function copyToClipboard(text) {
 
 function showNotification(message, type = 'success') {
     
-    // Remove any existing notifications
-    const existingNotifications = document.querySelectorAll('.notification');
-    existingNotifications.forEach(n => n.remove());
+    // Allow multiple notifications to stack - don't remove existing ones
+    // const existingNotifications = document.querySelectorAll('.notification');
+    // existingNotifications.forEach(n => n.remove());
     
     const notification = document.createElement('div');
     notification.className = 'notification';
-    notification.textContent = message;
+    
+    // Create message text element
+    const messageElement = document.createElement('span');
+    messageElement.textContent = message;
+    messageElement.style.cssText = 'display: block; margin-right: 30px;';
+    
+    // Create close button
+    const closeButton = document.createElement('button');
+    closeButton.innerHTML = '×';
+    closeButton.style.cssText = `
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        background: none;
+        border: none;
+        color: white;
+        font-size: 20px;
+        font-weight: bold;
+        cursor: pointer;
+        padding: 0;
+        width: 24px;
+        height: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        opacity: 0.8;
+        transition: opacity 0.2s ease;
+    `;
+    
+    closeButton.addEventListener('mouseenter', () => {
+        closeButton.style.opacity = '1';
+        closeButton.style.backgroundColor = 'rgba(255, 255, 255, 0.2)';
+    });
+    
+    closeButton.addEventListener('mouseleave', () => {
+        closeButton.style.opacity = '0.8';
+        closeButton.style.backgroundColor = 'transparent';
+    });
+    
+    closeButton.addEventListener('click', () => {
+        if (notification.parentNode) {
+            notification.remove();
+            // Reposition remaining notifications to fill gaps
+            repositionNotifications();
+        }
+    });
+    
+    // Add elements to notification
+    notification.appendChild(messageElement);
+    notification.appendChild(closeButton);
     
     // Different colors for different types
     const colors = {
@@ -702,9 +769,13 @@ function showNotification(message, type = 'success') {
         warning: '#ffc107'
     };
     
+    // Calculate position for stacking notifications
+    const existingNotificationsForPosition = document.querySelectorAll('.notification');
+    const topOffset = 20 + (existingNotificationsForPosition.length * 80); // 80px spacing between notifications
+    
     notification.style.cssText = `
         position: fixed;
-        top: 20px;
+        top: ${topOffset}px;
         right: 20px;
         background: ${colors[type] || colors.success};
         color: white;
@@ -718,15 +789,49 @@ function showNotification(message, type = 'success') {
         max-width: 400px;
         word-wrap: break-word;
         border-left: 4px solid rgba(255, 255, 255, 0.3);
+        padding-right: 48px;
     `;
     
     document.body.appendChild(notification);
     
-    setTimeout(() => {
-        if (notification.parentNode) {
-            notification.remove();
+    // Add keyboard support - ESC to close the most recent notification
+    const handleEscapeKey = (e) => {
+        if (e.key === 'Escape') {
+            const notifications = document.querySelectorAll('.notification');
+            if (notifications.length > 0) {
+                // Close the most recent (last) notification
+                const lastNotification = notifications[notifications.length - 1];
+                lastNotification.remove();
+                repositionNotifications();
+                
+                // Remove event listener if no more notifications
+                if (notifications.length === 1) { // Will be 0 after removal
+                    document.removeEventListener('keydown', handleEscapeKey);
+                }
+            }
         }
-    }, 5000);
+    };
+    
+    // Add escape key listener only if this is the first notification
+    const existingNotificationsForKeyboard = document.querySelectorAll('.notification');
+    if (existingNotificationsForKeyboard.length === 1) { // This notification was just added
+        document.addEventListener('keydown', handleEscapeKey);
+    }
+    
+    // Remove auto-close - notifications now only close manually
+    // setTimeout(() => {
+    //     if (notification.parentNode) {
+    //         notification.remove();
+    //     }
+    // }, 5000);
+}
+
+function repositionNotifications() {
+    const notifications = document.querySelectorAll('.notification');
+    notifications.forEach((notification, index) => {
+        const topOffset = 20 + (index * 80); // 80px spacing between notifications
+        notification.style.top = `${topOffset}px`;
+    });
 }
 
 function addFollowUpQuestions(questions) {
@@ -1603,10 +1708,33 @@ function parseMessageForDocuments(message) {
                 break;
             case 'file':
                 if (!filterData.documentIds) filterData.documentIds = [];
-                const document = availableDocuments.find(d => d.filename === mention.value);
+                console.log(`Looking for file: "${mention.value}"`);
+                console.log('Available files:', availableDocuments.map(d => ({ filename: d.filename, original_filename: d.original_filename, document_id: d.document_id })));
+                
+                // Try exact match first
+                let document = availableDocuments.find(d => d.filename === mention.value);
+                
+                // If not found, try original filename
+                if (!document) {
+                    document = availableDocuments.find(d => d.original_filename === mention.value);
+                    console.log(`Exact filename match failed, trying original_filename match: ${document ? 'found' : 'not found'}`);
+                }
+                
+                // If still not found, try partial match
+                if (!document) {
+                    document = availableDocuments.find(d => 
+                        d.filename.includes(mention.value) || mention.value.includes(d.filename) ||
+                        (d.original_filename && (d.original_filename.includes(mention.value) || mention.value.includes(d.original_filename)))
+                    );
+                    console.log(`Partial match attempt: ${document ? 'found' : 'not found'}`);
+                }
+                
                 if (document) {
+                    console.log(`✅ Found document: ${document.filename} (ID: ${document.document_id})`);
                     filterData.documentIds.push(document.document_id);
                 } else {
+                    console.log(`❌ Document not found: ${mention.value}`);
+                    console.log('Available filenames:', availableDocuments.map(d => d.filename));
                 }
                 break;
         }
@@ -2538,8 +2666,28 @@ function regenerateResponse() {
                 // Parse the message again to get filtering parameters for retry
                 const { cleanMessage, documentIds, projectIds, meetingIds, dateFilters, folderPath } = parseMessageForDocuments(lastUserMessage.content);
                 
+                // Apply same logic as sendMessage for mention-only queries
+                let queryMessage = cleanMessage;
+                if (!cleanMessage.trim() && (documentIds || projectIds || meetingIds || folderPath || dateFilters)) {
+                    if (folderPath) {
+                        queryMessage = "Please summarize the content from this folder.";
+                    } else if (documentIds && documentIds.length === 1) {
+                        queryMessage = "Please summarize this document.";
+                    } else if (documentIds && documentIds.length > 1) {
+                        queryMessage = "Please summarize these documents.";
+                    } else if (projectIds) {
+                        queryMessage = "Please summarize the documents from this project.";
+                    } else if (meetingIds) {
+                        queryMessage = "Please summarize this meeting.";
+                    } else if (dateFilters) {
+                        queryMessage = "Please summarize the documents from this time period.";
+                    } else {
+                        queryMessage = "Please provide information from the selected documents.";
+                    }
+                }
+                
                 // Build the same request body as the original send
-                const retryRequestBody = { message: cleanMessage };
+                const retryRequestBody = { message: queryMessage };
                 if (documentIds) {
                     retryRequestBody.document_ids = documentIds;
                 }
@@ -2594,8 +2742,51 @@ function showUploadModal() {
         modal.classList.add('active');
         document.body.style.overflow = 'hidden';
         
+        // Set up upload area event listeners when modal is shown
+        setupUploadAreaEventListeners();
+        
         // Don't clear files automatically - let user decide
         updateUploadedFilesList();
+    }
+}
+
+function setupUploadAreaEventListeners() {
+    const uploadArea = document.getElementById('upload-area');
+    const fileInput = document.getElementById('file-input');
+    
+    console.log('Setting up upload area listeners - Upload area:', uploadArea, 'File input:', fileInput);
+    
+    if (uploadArea && fileInput) {
+        // Remove any existing listeners to prevent duplicates
+        uploadArea.removeEventListener('click', handleUploadAreaClick);
+        uploadArea.removeEventListener('dragover', handleDragOver);
+        uploadArea.removeEventListener('dragleave', handleDragLeave);
+        uploadArea.removeEventListener('drop', handleDrop);
+        
+        // Add all event listeners
+        uploadArea.addEventListener('click', handleUploadAreaClick);
+        uploadArea.addEventListener('dragover', handleDragOver);
+        uploadArea.addEventListener('dragleave', handleDragLeave);
+        uploadArea.addEventListener('drop', handleDrop);
+        uploadArea.style.cursor = 'pointer';
+        
+        console.log('Upload area event listeners added successfully');
+    } else {
+        console.error('Upload area or file input not found when setting up listeners');
+    }
+}
+
+function handleUploadAreaClick(e) {
+    console.log('Upload area clicked!', e);
+    e.preventDefault();
+    e.stopPropagation();
+    
+    const fileInput = document.getElementById('file-input');
+    if (fileInput) {
+        console.log('Triggering file input click');
+        fileInput.click();
+    } else {
+        console.error('File input not found when handling click');
     }
 }
 
@@ -2842,6 +3033,41 @@ function parseServerError(result) {
 }
 
 async function processFiles() {
+    if (uploadedFiles.length === 0) return;
+
+    // Check if uploading to default project and show confirmation
+    const projectSelect = document.getElementById('project-select');
+    console.log('Processing files - Project select value:', projectSelect.value);
+    console.log('Available projects:', availableProjects);
+    
+    // Find selected project
+    const selectedProject = availableProjects.find(p => p.project_id === projectSelect.value);
+    console.log('Selected project:', selectedProject);
+    
+    // Get selected option text as fallback
+    const selectedOption = projectSelect.options[projectSelect.selectedIndex];
+    const selectedProjectName = selectedOption ? selectedOption.text : '';
+    console.log('Selected project name from option text:', selectedProjectName);
+    
+    // Show confirmation if explicitly selecting Default Project or if no project selected (which defaults to Default Project)
+    const isDefaultProject = (selectedProject && selectedProject.project_name === 'Default Project') ||
+                             (selectedProjectName === 'Default Project') ||
+                             (!projectSelect.value || projectSelect.value === '' || projectSelect.value === 'Select a project...');
+    
+    console.log('Is default project upload:', isDefaultProject);
+    
+    if (isDefaultProject) {
+        console.log('Showing default project confirmation modal');
+        showDefaultProjectUploadModal();
+        return; // Stop here and wait for user confirmation
+    }
+    
+    console.log('Proceeding with regular upload');
+    // If not default project, proceed directly
+    performActualUpload();
+}
+
+async function performActualUpload() {
     if (uploadedFiles.length === 0) return;
 
     const processBtn = document.getElementById('process-btn');
@@ -4035,6 +4261,14 @@ document.addEventListener('click', function(event) {
             closeUserProfile();
         }
     }
+    
+    // Close default project upload modal when clicking outside
+    const defaultProjectUploadModal = document.getElementById('default-project-upload-modal');
+    if (defaultProjectUploadModal && defaultProjectUploadModal.classList.contains('active')) {
+        if (event.target === defaultProjectUploadModal) {
+            closeDefaultProjectUploadModal();
+        }
+    }
 });
 
 // User Profile Functions
@@ -4574,6 +4808,27 @@ function closeDocumentDeleteModal() {
     if (deleteModal) {
         deleteModal.classList.remove('active');
     }
+}
+
+// Default project upload confirmation modal functions
+function closeDefaultProjectUploadModal() {
+    const modal = document.getElementById('default-project-upload-modal');
+    if (modal) modal.classList.remove('active');
+    document.body.style.overflow = 'auto';
+}
+
+function showDefaultProjectUploadModal() {
+    const modal = document.getElementById('default-project-upload-modal');
+    if (modal) {
+        modal.classList.add('active');
+        document.body.style.overflow = 'hidden';
+    }
+}
+
+function confirmDefaultProjectUpload() {
+    closeDefaultProjectUploadModal();
+    // Continue with actual upload
+    performActualUpload();
 }
 
 // Confirm document deletion

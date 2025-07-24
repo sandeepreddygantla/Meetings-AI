@@ -141,7 +141,7 @@
                 <button class="btn btn-link" onclick="showCreateProjectModal()" style="margin-left: 10px; padding: 0; font-size: 14px;">+ Create New Project</button>
             </div>
             
-            <div class="upload-area" id="upload-area" onclick="document.getElementById('file-input').click()">
+            <div class="upload-area" id="upload-area">
                 <div class="upload-icon">📁</div>
                 <div class="upload-text">Drop files here or click to upload</div>
                 <div class="upload-subtext">Supports .docx, .txt, and .pdf files (max 50MB each)</div>
@@ -355,6 +355,23 @@
             <div class="modal-actions">
                 <button class="modal-btn modal-btn-cancel" onclick="closeDocumentDeleteModal()">Cancel</button>
                 <button class="modal-btn modal-btn-delete" onclick="confirmDocumentDeletion()">Delete</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Default Project Upload Confirmation Modal -->
+    <div class="custom-modal" id="default-project-upload-modal">
+        <div class="custom-modal-content">
+            <div class="modal-header">
+                <span class="modal-icon">📁</span>
+                <span class="modal-title">Upload to Default Project</span>
+            </div>
+            <div class="modal-message" id="default-project-upload-message">
+                You are uploading documents to the Default Project. Are you sure you want to continue?
+            </div>
+            <div class="modal-actions">
+                <button class="modal-btn modal-btn-cancel" onclick="closeDefaultProjectUploadModal()">Cancel</button>
+                <button class="modal-btn modal-btn-confirm" onclick="confirmDefaultProjectUpload()">Continue Upload</button>
             </div>
         </div>
     </div>

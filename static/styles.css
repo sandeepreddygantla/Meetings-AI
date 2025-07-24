@@ -383,6 +383,13 @@ body {
 .modal-btn-save:hover {
     background: #001a5c;
 }
+.modal-btn-confirm {
+    background: #FF612B;
+    color: #FFFFFF;
+}
+.modal-btn-confirm:hover {
+    background: #e55525;
+}
 
 .conversation-item.active {
     background: #D9F6FA;

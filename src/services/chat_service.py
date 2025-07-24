@@ -390,6 +390,8 @@ class ChatService:
             # 5. Speaker/decision/action queries (from original intelligence)
             # 6. Queries without specific filters and many documents
             should_use_enhanced = (
+                # PRIORITY: Always use enhanced when specific document IDs are provided (for @file mentions)
+                (document_ids is not None and len(document_ids) > 0) or
                 (is_summary_query and document_count >= self.enhanced_summary_threshold) or
                 is_comprehensive or
                 is_project_summary or
@@ -437,6 +439,46 @@ class ChatService:
             if project_ids:
                 combined_project_ids.extend(project_ids)
             final_project_id = combined_project_ids[0] if combined_project_ids else None
+            
+            # PRIORITY CHECK: If specific document_ids are provided, use document-specific processing
+            # This ensures @file:filename mentions work correctly and don't get mixed with other documents
+            if document_ids:
+                logger.info(f"[ENHANCED] Specific document IDs provided: {document_ids}")
+                logger.info("[ENHANCED] Using document-specific processing (bypassing general routing)")
+                
+                # Debug: Get document details for verification
+                try:
+                    for doc_id in document_ids:
+                        doc_details = self.db_manager.get_document_by_id(doc_id)
+                        if doc_details:
+                            logger.info(f"[DEBUG] Document {doc_id}: filename='{doc_details.get('filename', 'N/A')}', date='{doc_details.get('date', 'N/A')}'")
+                        else:
+                            logger.warning(f"[DEBUG] Document {doc_id} not found in database")
+                except Exception as e:
+                    logger.error(f"[DEBUG] Error getting document details: {e}")
+                
+                # Create query context for specific documents
+                query_context = QueryContext(
+                    query=message,
+                    user_id=user_id,
+                    document_ids=document_ids,
+                    project_id=final_project_id,
+                    meeting_ids=meeting_ids,
+                    date_filters=date_filters,
+                    folder_path=folder_path,
+                    is_summary_query=True,  # Treat as summary when specific docs are selected
+                    is_comprehensive=False,  # Focus on specific documents only
+                    context_limit=150  # Moderate context for specific documents
+                )
+                
+                # Process with enhanced context manager
+                response, follow_up_questions, _ = self.enhanced_context_manager.process_enhanced_query(query_context)
+                
+                logger.info(f"[ENHANCED] Document-specific processing completed:")
+                logger.info(f"  - Response length: {len(response)} characters")
+                logger.info(f"  - Follow-up questions: {len(follow_up_questions)}")
+                
+                return response, follow_up_questions
             
             # Detect query characteristics using enhanced intelligence
             is_summary_query = self.detect_enhanced_summary_query(message)

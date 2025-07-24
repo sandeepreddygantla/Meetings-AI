@@ -104,10 +104,10 @@ class EnhancedContextManager:
             query_context.folder_path
         ])
         
-        # Comprehensive indicators
+        # Comprehensive indicators (removed 'summary' to avoid conflict with document-specific summaries)
         comprehensive_indicators = [
             'all meetings', 'all documents', 'everything', 'comprehensive',
-            'complete picture', 'full scope', 'entire', 'whole', 'summary',
+            'complete picture', 'full scope', 'entire', 'whole',
             'across all', 'overall', 'summarize all'
         ]
         
@@ -118,13 +118,14 @@ class EnhancedContextManager:
             indicator in query_lower for indicator in ['summary', 'summarize', 'overview']
         )
         
-        # Route decision logic
-        if no_filters and (is_comprehensive or is_summary):
+        # Route decision logic - PRIORITY: specific document/meeting filters always override comprehensive routing
+        if query_context.document_ids or query_context.meeting_ids:
+            logger.info(f"[ROUTING] Document/meeting filters detected - using targeted processing (bypassing comprehensive)")
+            return 'targeted_query'
+        elif no_filters and (is_comprehensive or is_summary):
             return 'no_filters_comprehensive'
         elif not no_filters and (is_comprehensive or is_summary):
             return 'filtered_comprehensive'
-        elif query_context.document_ids or query_context.meeting_ids:
-            return 'targeted_query'
         else:
             return 'general_query'
     
@@ -312,7 +313,7 @@ class EnhancedContextManager:
             score = 0.0
             
             # Content relevance (title, summary)
-            doc_text = f"{doc.get('title', '')} {doc.get('summary', '')}".lower()
+            doc_text = f"{getattr(doc, 'title', '')} {getattr(doc, 'summary', '')}".lower()
             doc_words = set(re.findall(r'\b\w+\b', doc_text))
             
             if query_keywords and doc_words:
@@ -320,9 +321,10 @@ class EnhancedContextManager:
                 score += overlap / len(query_keywords) * 0.4
             
             # Recency score
-            if doc.get('upload_date'):
+            upload_date = getattr(doc, 'created_at', None) or getattr(doc, 'upload_date', None)
+            if upload_date:
                 try:
-                    doc_date = datetime.fromisoformat(doc['upload_date'])
+                    doc_date = upload_date if isinstance(upload_date, datetime) else datetime.fromisoformat(str(upload_date))
                     days_old = (datetime.now() - doc_date).days
                     recency_score = max(0, 1 - days_old / 365) * 0.3
                     score += recency_score
@@ -330,7 +332,7 @@ class EnhancedContextManager:
                     pass
             
             # Size/importance score (larger documents often more important)
-            content_length = len(doc.get('content', ''))
+            content_length = len(getattr(doc, 'content', ''))
             if content_length > 1000:
                 score += 0.2
             
@@ -363,19 +365,19 @@ class EnhancedContextManager:
         for doc in documents:
             # Get document chunks using database manager
             try:
-                doc_chunks = self.db_manager.get_document_chunks(doc['document_id'])
+                doc_chunks = self.db_manager.get_document_chunks(doc.document_id)
                 
                 for chunk in doc_chunks:
                     context_chunks.append({
                         'text': chunk.content if hasattr(chunk, 'content') else '',
-                        'document_name': doc.get('filename', 'Unknown'),
-                        'document_id': doc['document_id'],
+                        'document_name': getattr(doc, 'filename', 'Unknown'),
+                        'document_id': doc.document_id,
                         'chunk_id': chunk.chunk_id if hasattr(chunk, 'chunk_id') else '',
-                        'timestamp': doc.get('upload_date'),
+                        'timestamp': getattr(doc, 'created_at', None),
                         'metadata': {
-                            'project_id': doc.get('project_id'),
-                            'meeting_id': doc.get('meeting_id'),
-                            'title': doc.get('title')
+                            'project_id': getattr(doc, 'project_id', None),
+                            'meeting_id': getattr(doc, 'meeting_id', None),
+                            'title': getattr(doc, 'summary', '') or getattr(doc, 'filename', '')
                         }
                     })
                     
@@ -406,22 +408,32 @@ class EnhancedContextManager:
             
             # Apply project filter
             if query_context.project_id:
-                documents = [d for d in documents if d.get('project_id') == query_context.project_id]
+                documents = [d for d in documents if getattr(d, 'project_id', None) == query_context.project_id]
                 logger.info(f"[FILTER] After project filter: {len(documents)} documents")
             
             # Apply meeting filter
             if query_context.meeting_ids:
-                documents = [d for d in documents if d.get('meeting_id') in query_context.meeting_ids]
+                documents = [d for d in documents if getattr(d, 'meeting_id', None) in query_context.meeting_ids]
                 logger.info(f"[FILTER] After meeting filter: {len(documents)} documents")
             
             # Apply document filter
             if query_context.document_ids:
+                logger.info(f"[FILTER] Filtering by document IDs: {query_context.document_ids}")
+                original_count = len(documents)
                 documents = [d for d in documents if d.document_id in query_context.document_ids]
-                logger.info(f"[FILTER] After document filter: {len(documents)} documents")
+                logger.info(f"[FILTER] After document filter: {len(documents)} documents (was {original_count})")
+                
+                # Debug: Log which documents were selected
+                for doc in documents:
+                    logger.info(f"[FILTER] Selected document: ID={doc.document_id}, filename='{doc.filename}', date='{getattr(doc, 'extracted_date', getattr(doc, 'created_at', 'N/A'))}'")
+                
+                if len(documents) == 0:
+                    logger.warning(f"[FILTER] No documents found matching IDs: {query_context.document_ids}")
+                    logger.info(f"[FILTER] Available document IDs: {[d.document_id for d in self.db_manager.get_all_documents(query_context.user_id)]}")
             
             # Apply folder filter
             if query_context.folder_path:
-                documents = [d for d in documents if query_context.folder_path in d.get('folder_path', '')]
+                documents = [d for d in documents if query_context.folder_path in getattr(d, 'folder_path', '')]
                 logger.info(f"[FILTER] After folder filter: {len(documents)} documents")
             
             # Apply date filters
@@ -460,13 +472,11 @@ class EnhancedContextManager:
                 doc_date = None
                 
                 # Extract date from document (try multiple fields)
-                if 'date' in doc and doc['date']:
-                    doc_date_str = doc['date']
-                elif 'upload_date' in doc and doc['upload_date']:
-                    doc_date_str = doc['upload_date']
-                elif 'created_at' in doc and doc['created_at']:
-                    doc_date_str = doc['created_at']
-                else:
+                doc_date_str = (getattr(doc, 'extracted_date', None) or 
+                               getattr(doc, 'created_at', None) or 
+                               getattr(doc, 'upload_date', None))
+                
+                if not doc_date_str:
                     continue  # Skip documents without dates
                 
                 # Parse date string to datetime object
