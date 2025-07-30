@@ -4183,9 +4183,18 @@ function closeCreateProjectModal() {
     }
 }
 
+// Add global variable for project creation state
+let isCreatingProject = false;
+
 async function confirmCreateProject() {
+    // Prevent multiple simultaneous requests
+    if (isCreatingProject) {
+        return;
+    }
+    
     const nameInput = document.getElementById('project-name-input');
     const descInput = document.getElementById('project-description-input');
+    const createButton = document.querySelector('#create-project-modal .modal-btn-save');
     
     const projectName = nameInput.value.trim();
     const description = descInput.value.trim();
@@ -4195,6 +4204,12 @@ async function confirmCreateProject() {
         nameInput.focus();
         return;
     }
+    
+    // Set loading state
+    isCreatingProject = true;
+    createButton.disabled = true;
+    createButton.textContent = 'Creating...';
+    createButton.style.opacity = '0.7';
     
     try {
         const response = await fetch('/meetingsai/api/projects', {
@@ -4219,10 +4234,143 @@ async function confirmCreateProject() {
             selectedProjectId = data.project_id;
             updateProjectSelect();
         } else {
-            showNotification('Failed to create project: ' + data.error);
+            // Handle different error types
+            if (data.error_code === 'DUPLICATE_NAME') {
+                showDuplicateProjectDialog(data.project_name);
+            } else {
+                showNotification('Failed to create project: ' + data.error);
+            }
         }
     } catch (error) {
         showNotification('Failed to create project');
+    } finally {
+        // Reset loading state
+        isCreatingProject = false;
+        createButton.disabled = false;
+        createButton.textContent = 'Create Project';
+        createButton.style.opacity = '1';
+    }
+}
+
+// Duplicate Project Dialog Functions
+function showDuplicateProjectDialog(originalProjectName) {
+    const modal = document.getElementById('duplicate-project-modal');
+    const projectNameSpan = document.getElementById('duplicate-project-name');
+    const newProjectInput = document.getElementById('new-project-name-input');
+    const suggestionsContainer = document.getElementById('duplicate-suggestions');
+    
+    if (modal && projectNameSpan && newProjectInput && suggestionsContainer) {
+        // Set the original project name
+        projectNameSpan.textContent = originalProjectName;
+        
+        // Generate suggestions
+        const suggestions = generateProjectNameSuggestions(originalProjectName);
+        suggestionsContainer.innerHTML = '';
+        
+        suggestions.forEach(suggestion => {
+            const suggestionItem = document.createElement('div');
+            suggestionItem.className = 'suggestion-item';
+            suggestionItem.textContent = suggestion;
+            suggestionItem.onclick = () => {
+                newProjectInput.value = suggestion;
+                newProjectInput.focus();
+            };
+            suggestionsContainer.appendChild(suggestionItem);
+        });
+        
+        // Clear and focus the input
+        newProjectInput.value = '';
+        modal.classList.add('active');
+        setTimeout(() => newProjectInput.focus(), 300);
+    }
+}
+
+function closeDuplicateProjectDialog() {
+    const modal = document.getElementById('duplicate-project-modal');
+    if (modal) {
+        modal.classList.remove('active');
+    }
+}
+
+function generateProjectNameSuggestions(originalName) {
+    const suggestions = [];
+    const currentDate = new Date();
+    const year = currentDate.getFullYear();
+    const month = (currentDate.getMonth() + 1).toString().padStart(2, '0');
+    const day = currentDate.getDate().toString().padStart(2, '0');
+    
+    // Add numbered suggestions
+    suggestions.push(`${originalName} (2)`);
+    suggestions.push(`${originalName} (3)`);
+    
+    // Add date-based suggestions
+    suggestions.push(`${originalName} ${year}`);
+    suggestions.push(`${originalName} ${month}-${day}`);
+    
+    // Add descriptive suggestions
+    suggestions.push(`${originalName} - New`);
+    suggestions.push(`${originalName} - Updated`);
+    
+    return suggestions;
+}
+
+async function retryCreateProject() {
+    const newProjectInput = document.getElementById('new-project-name-input');
+    const originalDescInput = document.getElementById('project-description-input');
+    const retryButton = document.querySelector('.duplicate-retry-btn');
+    
+    const newProjectName = newProjectInput.value.trim();
+    const description = originalDescInput ? originalDescInput.value.trim() : '';
+    
+    if (!newProjectName) {
+        showNotification('Please enter a project name');
+        newProjectInput.focus();
+        return;
+    }
+    
+    // Set loading state
+    retryButton.disabled = true;
+    retryButton.textContent = 'Creating...';
+    retryButton.style.opacity = '0.7';
+    
+    try {
+        const response = await fetch('/meetingsai/api/projects', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                project_name: newProjectName,
+                description: description
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showNotification('Project created successfully');
+            closeDuplicateProjectDialog();
+            closeCreateProjectModal();
+            
+            // Reload projects and select the new one
+            await loadProjects();
+            selectedProjectId = data.project_id;
+            updateProjectSelect();
+        } else {
+            if (data.error_code === 'DUPLICATE_NAME') {
+                // Still duplicate, show another dialog
+                showDuplicateProjectDialog(data.project_name);
+            } else {
+                showNotification('Failed to create project: ' + data.error);
+            }
+        }
+    } catch (error) {
+        showNotification('Failed to create project');
+    } finally {
+        // Reset loading state
+        retryButton.disabled = false;
+        retryButton.textContent = 'Try Again';
+        retryButton.style.opacity = '1';
     }
 }
 
@@ -4251,6 +4399,14 @@ document.addEventListener('click', function(event) {
     if (createProjectModal && createProjectModal.classList.contains('active')) {
         if (event.target === createProjectModal) {
             closeCreateProjectModal();
+        }
+    }
+    
+    // Close duplicate project modal when clicking outside
+    const duplicateProjectModal = document.getElementById('duplicate-project-modal');
+    if (duplicateProjectModal && duplicateProjectModal.classList.contains('active')) {
+        if (event.target === duplicateProjectModal) {
+            closeDuplicateProjectDialog();
         }
     }
     
@@ -4708,6 +4864,50 @@ function escapeHtml(text) {
     div.textContent = text;
     return div.innerHTML;
 }
+
+// Global ESC key handler for modals
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        // Check and close duplicate project modal first (highest priority)
+        const duplicateModal = document.getElementById('duplicate-project-modal');
+        if (duplicateModal && duplicateModal.classList.contains('active')) {
+            closeDuplicateProjectDialog();
+            return;
+        }
+        
+        // Check and close create project modal
+        const createProjectModal = document.getElementById('create-project-modal');
+        if (createProjectModal && createProjectModal.classList.contains('active')) {
+            closeCreateProjectModal();
+            return;
+        }
+        
+        // Check and close other modals
+        const editModal = document.getElementById('edit-modal');
+        if (editModal && editModal.classList.contains('active')) {
+            closeEditModal();
+            return;
+        }
+        
+        const deleteModal = document.getElementById('delete-modal');
+        if (deleteModal && deleteModal.classList.contains('active')) {
+            closeDeleteModal();
+            return;
+        }
+        
+        const userProfileModal = document.getElementById('user-profile-modal');
+        if (userProfileModal && userProfileModal.classList.contains('active')) {
+            closeUserProfile();
+            return;
+        }
+        
+        const defaultProjectModal = document.getElementById('default-project-upload-modal');
+        if (defaultProjectModal && defaultProjectModal.classList.contains('active')) {
+            closeDefaultProjectUploadModal();
+            return;
+        }
+    }
+});
 
 // Toggle document selection
 function toggleDocumentSelection(documentId) {

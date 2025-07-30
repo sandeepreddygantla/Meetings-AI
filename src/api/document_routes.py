@@ -127,7 +127,7 @@ def create_document_blueprint(base_path: str, document_service: DocumentService,
             project_name = data.get('project_name', '').strip()
             description = data.get('description', '').strip()
             
-            success, message, project_id = document_service.create_project(
+            success, message, project_id, error_code = document_service.create_project(
                 current_user.user_id, project_name, description
             )
             
@@ -138,11 +138,40 @@ def create_document_blueprint(base_path: str, document_service: DocumentService,
                     'project_id': project_id
                 })
             else:
-                return jsonify({'success': False, 'error': message}), 400
+                # Return appropriate HTTP status codes based on error type
+                if error_code == 'DUPLICATE_NAME':
+                    return jsonify({
+                        'success': False, 
+                        'error': message,
+                        'error_code': error_code,
+                        'project_name': project_name
+                    }), 409  # Conflict
+                elif error_code == 'EMPTY_NAME':
+                    return jsonify({
+                        'success': False, 
+                        'error': message,
+                        'error_code': error_code
+                    }), 400  # Bad Request
+                elif error_code in ['DATABASE_ERROR', 'GENERAL_ERROR', 'EXCEPTION_ERROR']:
+                    return jsonify({
+                        'success': False, 
+                        'error': message,
+                        'error_code': error_code
+                    }), 500  # Internal Server Error
+                else:
+                    return jsonify({
+                        'success': False, 
+                        'error': message,
+                        'error_code': error_code or 'UNKNOWN'
+                    }), 400  # Bad Request
                 
         except Exception as e:
             logger.error(f"Create project error: {e}")
-            return jsonify({'success': False, 'error': 'Failed to create project'}), 500
+            return jsonify({
+                'success': False, 
+                'error': 'Failed to create project',
+                'error_code': 'INTERNAL_ERROR'
+            }), 500
     
     @doc_bp.route(f'{base_path}/api/meetings')
     @login_required

@@ -226,6 +226,29 @@
         </div>
     </div>
 
+    <!-- Duplicate Project Dialog -->
+    <div class="custom-modal" id="duplicate-project-modal">
+        <div class="custom-modal-content duplicate-dialog">
+            <div class="modal-header duplicate-header">
+                <span class="modal-icon duplicate-icon">⚠️</span>
+                <span class="modal-title">Project Name Already Exists</span>
+            </div>
+            <div class="modal-message duplicate-message">
+                A project with the name "<strong id="duplicate-project-name"></strong>" already exists.
+                <br><br>
+                Please choose a different name or try one of these suggestions:
+            </div>
+            <div class="duplicate-suggestions" id="duplicate-suggestions">
+                <!-- Suggestions will be populated dynamically -->
+            </div>
+            <input type="text" class="modal-input duplicate-input" id="new-project-name-input" placeholder="Enter a new project name">
+            <div class="modal-actions">
+                <button class="modal-btn modal-btn-cancel" onclick="closeDuplicateProjectDialog()">Cancel</button>
+                <button class="modal-btn modal-btn-save duplicate-retry-btn" onclick="retryCreateProject()">Try Again</button>
+            </div>
+        </div>
+    </div>
+
     <!-- User Profile Modal -->
     <div class="custom-modal" id="user-profile-modal">
         <div class="custom-modal-content user-profile-content">

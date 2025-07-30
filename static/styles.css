@@ -391,6 +391,88 @@ body {
     background: #e55525;
 }
 
+/* Duplicate Project Dialog Styles */
+.duplicate-dialog {
+    max-width: 480px;
+    background: #FAF8F2;
+}
+
+.duplicate-header {
+    background: #D9F6FA;
+    padding: 16px;
+    margin: -24px -24px 20px -24px;
+    border-radius: 16px 16px 0 0;
+}
+
+.duplicate-icon {
+    color: #FF612B;
+    font-size: 28px;
+}
+
+.duplicate-message {
+    color: #002677;
+    font-size: 15px;
+    line-height: 1.6;
+    margin-bottom: 20px;
+}
+
+.duplicate-message strong {
+    color: #FF612B;
+    font-weight: 600;
+}
+
+.duplicate-suggestions {
+    margin-bottom: 20px;
+}
+
+.suggestion-item {
+    display: inline-block;
+    background: #FFFFFF;
+    color: #002677;
+    padding: 8px 16px;
+    margin: 4px 8px 4px 0;
+    border-radius: 20px;
+    border: 2px solid #D9F6FA;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.2s ease;
+}
+
+.suggestion-item:hover {
+    background: #D9F6FA;
+    border-color: #FF612B;
+    transform: translateY(-1px);
+}
+
+.suggestion-item:active {
+    transform: translateY(0);
+}
+
+.duplicate-input {
+    background: #FFFFFF;
+    border: 2px solid #D9F6FA;
+}
+
+.duplicate-input:focus {
+    border-color: #FF612B;
+    box-shadow: 0 0 0 3px rgba(255, 97, 43, 0.1);
+}
+
+.duplicate-retry-btn {
+    background: #FF612B;
+    color: #FFFFFF;
+}
+
+.duplicate-retry-btn:hover {
+    background: #e55525;
+}
+
+.duplicate-retry-btn:disabled {
+    background: #4B4D4F;
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
 .conversation-item.active {
     background: #D9F6FA;
     color: #002677;

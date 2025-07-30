@@ -75,7 +75,7 @@ class DocumentService:
             logger.error(f"Error getting user projects: {e}")
             return False, [], f"Error retrieving projects: {str(e)}"
     
-    def create_project(self, user_id: str, project_name: str, description: str = "") -> Tuple[bool, str, Optional[str]]:
+    def create_project(self, user_id: str, project_name: str, description: str = "") -> Tuple[bool, str, Optional[str], Optional[str]]:
         """
         Create a new project for a user.
         
@@ -85,22 +85,34 @@ class DocumentService:
             description: Project description
             
         Returns:
-            Tuple of (success, message, project_id)
+            Tuple of (success, message, project_id, error_code)
         """
         try:
             if not project_name or not project_name.strip():
-                return False, 'Project name is required', None
+                return False, 'Project name is required', None, 'EMPTY_NAME'
             
             project_id = self.db_manager.create_project(user_id, project_name.strip(), description.strip())
             logger.info(f"New project created: {project_name} ({project_id}) for user {user_id}")
             
-            return True, 'Project created successfully', project_id
+            return True, 'Project created successfully', project_id, None
             
         except ValueError as e:
-            return False, str(e), None
+            error_message = str(e)
+            
+            if "DUPLICATE_PROJECT_NAME" in error_message:
+                return False, f'A project named "{project_name}" already exists. Please choose a different name.', None, 'DUPLICATE_NAME'
+            elif "DATABASE_ERROR" in error_message:
+                logger.error(f"Database error creating project: {error_message}")
+                return False, 'Database error occurred. Please try again.', None, 'DATABASE_ERROR'
+            elif "GENERAL_ERROR" in error_message:
+                logger.error(f"General error creating project: {error_message}")
+                return False, 'An unexpected error occurred. Please try again.', None, 'GENERAL_ERROR'
+            else:
+                return False, error_message, None, 'UNKNOWN_ERROR'
+                
         except Exception as e:
             logger.error(f"Create project error: {e}")
-            return False, 'Failed to create project', None
+            return False, 'Failed to create project', None, 'EXCEPTION_ERROR'
     
     def get_user_meetings(self, user_id: str, project_id: Optional[str] = None) -> Tuple[bool, List[Dict[str, Any]], str]:
         """

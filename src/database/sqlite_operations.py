@@ -150,7 +150,8 @@ class SQLiteOperations:
                 description TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 is_active BOOLEAN DEFAULT TRUE,
-                FOREIGN KEY (user_id) REFERENCES users (user_id)
+                FOREIGN KEY (user_id) REFERENCES users (user_id),
+                UNIQUE(user_id, project_name)
             )
         ''')
         
@@ -904,6 +905,18 @@ class SQLiteOperations:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
+            # Check if project name already exists for this user
+            cursor.execute('''
+                SELECT project_id FROM projects 
+                WHERE user_id = ? AND project_name = ? AND is_active = 1
+            ''', (user_id, project_name))
+            
+            existing_project = cursor.fetchone()
+            if existing_project:
+                conn.close()
+                logger.warning(f"Project name '{project_name}' already exists for user {user_id}")
+                raise ValueError(f"DUPLICATE_PROJECT_NAME")
+            
             cursor.execute('''
                 INSERT INTO projects (project_id, user_id, project_name, description, created_at)
                 VALUES (?, ?, ?, ?, ?)
@@ -915,9 +928,17 @@ class SQLiteOperations:
             logger.info(f"Created new project: {project_name} for user {user_id}")
             return project_id
             
+        except ValueError as ve:
+            # Re-raise ValueError with specific error codes
+            raise ve
+        except sqlite3.IntegrityError as ie:
+            logger.error(f"Database integrity error creating project: {ie}")
+            if "UNIQUE constraint failed" in str(ie):
+                raise ValueError("DUPLICATE_PROJECT_NAME")
+            raise ValueError(f"DATABASE_ERROR: {str(ie)}")
         except Exception as e:
             logger.error(f"Error creating project: {e}")
-            raise
+            raise ValueError(f"GENERAL_ERROR: {str(e)}")
     
     def get_user_projects(self, user_id: str):
         """Get all projects for a user"""
