@@ -9,9 +9,12 @@ import logging
 import hashlib
 import uuid
 import json
+import threading
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple, Union
 from pathlib import Path
+from contextlib import contextmanager
+import queue
 
 # Import models and global variables from the main module  
 from meeting_processor import (
@@ -23,17 +26,113 @@ logger = logging.getLogger(__name__)
 
 
 class SQLiteOperations:
-    """Handles all SQLite database operations"""
+    """Handles all SQLite database operations with connection pooling"""
     
-    def __init__(self, db_path: str = "meeting_documents.db"):
+    def __init__(self, db_path: str = "meeting_documents.db", pool_size: int = 10):
         """
-        Initialize SQLite operations
+        Initialize SQLite operations with connection pooling
         
         Args:
             db_path: Path to SQLite database file
+            pool_size: Maximum number of connections in the pool
         """
         self.db_path = db_path
+        self.pool_size = pool_size
+        self._connection_pool = queue.Queue(maxsize=pool_size)
+        self._pool_lock = threading.Lock()
+        self._pool_created = False
+        
+        # Initialize database structure first
         self._init_database()
+        
+        # Create connection pool
+        self._create_connection_pool()
+    
+    def _create_optimized_connection(self) -> sqlite3.Connection:
+        """Create a SQLite connection with performance optimizations"""
+        conn = sqlite3.connect(
+            self.db_path,
+            timeout=30.0,  # 30 second timeout for busy database
+            isolation_level=None,  # Autocommit mode for better performance
+            check_same_thread=False  # Allow connections to be used across threads
+        )
+        
+        # Enable WAL mode for better concurrent performance
+        conn.execute("PRAGMA journal_mode=WAL")
+        
+        # Performance optimizations
+        conn.execute("PRAGMA synchronous=NORMAL")  # Faster than FULL, still safe with WAL
+        conn.execute("PRAGMA cache_size=-64000")   # 64MB cache (negative = KB)
+        conn.execute("PRAGMA temp_store=MEMORY")   # Store temp tables in memory
+        conn.execute("PRAGMA mmap_size=268435456") # 256MB memory-mapped I/O
+        
+        # Enable foreign keys
+        conn.execute("PRAGMA foreign_keys=ON")
+        
+        # Custom row factory for better performance
+        conn.row_factory = sqlite3.Row
+        
+        return conn
+    
+    def _create_connection_pool(self):
+        """Create a pool of database connections for better performance"""
+        with self._pool_lock:
+            if self._pool_created:
+                return
+            
+            logger.info(f"Creating SQLite connection pool with {self.pool_size} connections")
+            
+            for _ in range(self.pool_size):
+                try:
+                    conn = self._create_optimized_connection()
+                    self._connection_pool.put(conn)
+                except Exception as e:
+                    logger.error(f"Failed to create database connection: {e}")
+            
+            self._pool_created = True
+            logger.info("SQLite connection pool created successfully")
+    
+    @contextmanager
+    def get_connection(self):
+        """Get a database connection from the pool"""
+        conn = None
+        try:
+            # Try to get connection from pool (with timeout)
+            try:
+                conn = self._connection_pool.get(timeout=5.0)
+            except queue.Empty:
+                # Pool is empty, create a temporary connection
+                logger.warning("Connection pool empty, creating temporary connection")
+                conn = self._create_optimized_connection()
+            
+            yield conn
+            
+        except Exception as e:
+            logger.error(f"Database connection error: {e}")
+            # Try to rollback if connection is still valid
+            if conn:
+                try:
+                    conn.rollback()
+                except:
+                    pass
+            raise
+        finally:
+            # Return connection to pool or close if it was temporary
+            if conn:
+                try:
+                    # Check if pool has space
+                    if self._connection_pool.qsize() < self.pool_size:
+                        self._connection_pool.put(conn, block=False)
+                    else:
+                        conn.close()  # Close temporary connection
+                except queue.Full:
+                    conn.close()  # Pool is full, close connection
+                except Exception as e:
+                    logger.error(f"Error returning connection to pool: {e}")
+                    try:
+                        conn.close()
+                    except:
+                        pass
     
     def _safe_json_loads(self, json_str: str) -> list:
         """Safely parse JSON string, return empty list if parsing fails"""
@@ -120,7 +219,8 @@ class SQLiteOperations:
     
     def _init_database(self):
         """Initialize SQLite database for metadata storage"""
-        conn = sqlite3.connect(self.db_path)
+        # Create a temporary connection for initialization only
+        conn = self._create_optimized_connection()
         cursor = conn.cursor()
         
         # Create users table
@@ -311,7 +411,7 @@ class SQLiteOperations:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_sessions_user ON user_sessions(user_id)')
         
         conn.commit()
-        conn.close()
+        conn.close()  # Close temporary initialization connection
     
     def _migrate_existing_tables(self, cursor):
         """Migrate existing tables to support multi-user structure and enhanced intelligence"""
@@ -475,12 +575,12 @@ class SQLiteOperations:
             conn.close()
     
     def get_chunks_by_ids(self, chunk_ids: List[str]):
-        """Retrieve chunks by their IDs with enhanced intelligence metadata"""
+        """Retrieve chunks by their IDs with enhanced intelligence metadata using connection pool"""
         if not chunk_ids:
             return []
         
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
         
         try:
             logger.info(f"Looking for {len(chunk_ids)} chunks in database. Sample IDs: {chunk_ids[:3]}...")

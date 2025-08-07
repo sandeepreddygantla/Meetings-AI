@@ -2,8 +2,9 @@
 Flask application for Meetings AI - Refactored with modular architecture.
 Maintains IIS compatibility while providing clean separation of concerns.
 """
-from flask import Flask, render_template, redirect, session
+from flask import Flask, render_template, redirect, session, send_from_directory, make_response
 from flask_login import LoginManager, login_required
+import mimetypes
 import os
 import logging
 
@@ -22,9 +23,13 @@ from src.services.auth_service import AuthService
 from src.services.chat_service import ChatService
 from src.services.document_service import DocumentService
 from src.services.upload_service import UploadService
+from src.services.background_processor import get_background_processor, shutdown_background_processor
 
 # Import API routes
 from src.api import register_all_routes
+
+# Import asset optimizer
+from src.utils.asset_optimizer import AssetOptimizer
 
 # Import existing processor for backwards compatibility
 try:
@@ -54,6 +59,7 @@ app = None
 db_manager = None
 services = {}
 processor = None
+asset_optimizer = None
 _application_initialized = False
 
 
@@ -78,24 +84,14 @@ def create_flask_app():
 
 def initialize_services():
     """Initialize all services and dependencies."""
-    global db_manager, services, processor
+    global db_manager, services, processor, asset_optimizer
     
     try:
         logger.info("Initializing services...")
         
-        # Initialize AI clients (following instructions.md)
-        # Check if already initialized in meeting_processor global scope
-        try:
-            from meeting_processor import access_token, embedding_model, llm
-            if access_token and embedding_model and llm:
-                logger.info("AI clients already initialized in meeting_processor")
-            else:
-                if not initialize_ai_clients():
-                    logger.error("Failed to initialize AI clients")
-                    # Continue anyway - some functionality may be limited
-        except ImportError:
-            logger.error("Could not import AI clients from meeting_processor")
-            # Continue anyway - some functionality may be limited
+        # AI clients now use lazy loading - no initialization needed at startup
+        # This significantly improves application startup time
+        logger.info("AI clients configured for lazy loading - will initialize on first use")
         
         # Initialize database manager
         db_manager = DatabaseManager()
@@ -120,6 +116,15 @@ def initialize_services():
         services['chat_service'] = ChatService(db_manager, processor)
         services['document_service'] = DocumentService(db_manager, processor)
         services['upload_service'] = UploadService(db_manager, services['document_service'])
+        
+        # Initialize asset optimizer
+        static_dir = os.path.join(os.path.dirname(__file__), 'static')
+        asset_optimizer = AssetOptimizer(static_dir)
+        logger.info("Asset optimizer initialized")
+        
+        # Initialize background processor
+        background_processor = get_background_processor()
+        logger.info("Background processor initialized")
         
         logger.info("All services initialized successfully")
         return True
@@ -146,7 +151,7 @@ def setup_flask_login():
 
 
 def register_core_routes():
-    """Register core application routes."""
+    """Register core application routes with static file optimizations."""
     
     @app.route('/')
     def root():
@@ -166,6 +171,71 @@ def register_core_routes():
             logger.error(f"Error rendering chat.html: {e}")
             return f"Error loading chat interface: {str(e)}", 500
     
+    @app.route(f'{BASE_PATH}/static/<path:filename>')
+    def optimized_static(filename):
+        """Serve static files with optimization, caching headers and compression."""
+        try:
+            # Get the static folder path
+            static_folder = os.path.join(app.root_path, 'static')
+            
+            # Check if file exists
+            file_path = os.path.join(static_folder, filename)
+            if not os.path.exists(file_path):
+                return "File not found", 404
+            
+            # Get file extension
+            file_ext = os.path.splitext(filename)[1].lower()
+            
+            # Handle CSS and JS files with optimization
+            if file_ext == '.css' and asset_optimizer:
+                content = asset_optimizer.get_optimized_css(filename)
+                if content:
+                    response = make_response(content)
+                    response.headers['Content-Type'] = 'text/css; charset=utf-8'
+                    response.headers['Cache-Control'] = 'public, max-age=3600'
+                    response.headers['ETag'] = f'"{hash(filename + str(os.path.getmtime(file_path)))}"'
+                    response.headers['Vary'] = 'Accept-Encoding'
+                    return response
+            
+            elif file_ext == '.js' and asset_optimizer:
+                content = asset_optimizer.get_optimized_js(filename)
+                if content:
+                    response = make_response(content)
+                    response.headers['Content-Type'] = 'application/javascript; charset=utf-8'
+                    response.headers['Cache-Control'] = 'public, max-age=3600'
+                    response.headers['ETag'] = f'"{hash(filename + str(os.path.getmtime(file_path)))}"'
+                    response.headers['Vary'] = 'Accept-Encoding'
+                    return response
+            
+            # Fallback to regular file serving with cache headers
+            response = make_response(send_from_directory(static_folder, filename))
+            
+            # Set cache headers based on file type
+            if file_ext in ['.js', '.css']:
+                # Cache JavaScript and CSS for 1 hour
+                response.headers['Cache-Control'] = 'public, max-age=3600'
+                response.headers['ETag'] = f'"{hash(filename + str(os.path.getmtime(file_path)))}"'
+            elif file_ext in ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico']:
+                # Cache images for 24 hours
+                response.headers['Cache-Control'] = 'public, max-age=86400'
+                response.headers['ETag'] = f'"{hash(filename + str(os.path.getmtime(file_path)))}"'
+            elif file_ext in ['.woff', '.woff2', '.ttf', '.eot']:
+                # Cache fonts for 30 days
+                response.headers['Cache-Control'] = 'public, max-age=2592000'
+                response.headers['ETag'] = f'"{hash(filename + str(os.path.getmtime(file_path)))}"'
+            else:
+                # Default caching for other files
+                response.headers['Cache-Control'] = 'public, max-age=1800'  # 30 minutes
+            
+            # Add compression hint
+            response.headers['Vary'] = 'Accept-Encoding'
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error serving static file {filename}: {e}")
+            return "Error serving file", 500
+    
     @app.route(f'{BASE_PATH}/api/refresh', methods=['POST'])
     @login_required
     def refresh_system():
@@ -181,6 +251,64 @@ def register_core_routes():
                 return {'success': False, 'error': 'System not initialized'}, 500
         except Exception as e:
             logger.error(f"Refresh error: {e}")
+            return {'success': False, 'error': str(e)}, 500
+    
+    @app.route(f'{BASE_PATH}/api/background-tasks/<task_id>', methods=['GET'])
+    @login_required
+    def get_background_task_status(task_id):
+        """Get background task status."""
+        try:
+            bg_processor = get_background_processor()
+            task = bg_processor.get_task_status(task_id)
+            
+            if not task:
+                return {'success': False, 'error': 'Task not found'}, 404
+            
+            return {
+                'success': True,
+                'task': {
+                    'id': task.task_id,
+                    'name': task.name,
+                    'status': task.status.value,
+                    'progress': task.progress,
+                    'created_at': task.created_at,
+                    'started_at': task.started_at,
+                    'completed_at': task.completed_at,
+                    'error': task.error
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error getting task status: {e}")
+            return {'success': False, 'error': str(e)}, 500
+    
+    @app.route(f'{BASE_PATH}/api/background-tasks', methods=['GET'])
+    @login_required
+    def get_background_tasks():
+        """Get all background tasks."""
+        try:
+            bg_processor = get_background_processor()
+            tasks = bg_processor.get_all_tasks()
+            
+            task_list = []
+            for task in tasks.values():
+                task_list.append({
+                    'id': task.task_id,
+                    'name': task.name,
+                    'status': task.status.value,
+                    'progress': task.progress,
+                    'created_at': task.created_at,
+                    'started_at': task.started_at,
+                    'completed_at': task.completed_at,
+                    'error': task.error
+                })
+            
+            return {
+                'success': True,
+                'tasks': task_list,
+                'stats': bg_processor.get_stats()
+            }
+        except Exception as e:
+            logger.error(f"Error getting tasks: {e}")
             return {'success': False, 'error': str(e)}, 500
     
     logger.info(f"Core routes registered with base path: {BASE_PATH}")

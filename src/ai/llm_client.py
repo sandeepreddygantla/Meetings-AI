@@ -5,8 +5,11 @@ Follows instructions.md requirements - uses global variables from meeting_proces
 import logging
 from typing import Optional, Dict, Any, List
 
-# Import global variables as per instructions.md requirements
-from meeting_processor import access_token, embedding_model, llm
+# Import safe functions for lazy loading as per instructions.md requirements
+from meeting_processor import (
+    access_token, embedding_model, llm,  # Keep original imports for compatibility
+    get_llm_safe, get_embedding_model_safe, get_access_token_safe, ensure_ai_clients_initialized
+)
 
 logger = logging.getLogger(__name__)
 
@@ -15,46 +18,41 @@ def initialize_ai_clients():
     """
     Initialize global AI client instances following instructions.md.
     
-    NOTE: This function is a compatibility wrapper.
-    The actual initialization happens in meeting_processor.py using:
-    - access_token = get_access_token()
-    - embedding_model = get_embedding_model(access_token)  
-    - llm = get_llm(access_token)
+    Uses lazy loading - clients are initialized only on first use.
+    This significantly improves application startup time.
     
     Returns:
         bool: True if clients are available, False otherwise
     """
     try:
-        logger.info("Initializing AI clients...")
+        logger.info("Checking AI clients availability...")
         
-        # Check if global variables are properly initialized
-        if embedding_model is None or llm is None:
-            logger.error("Global AI clients not initialized in meeting_processor")
+        # Use lazy initialization
+        if not ensure_ai_clients_initialized():
+            logger.error("Failed to initialize AI clients - check API configuration")
             return False
             
-        logger.info("Embedding model initialized successfully")
-        logger.info("LLM initialized successfully")
-        
+        logger.info("AI clients are available and ready")
         return True
         
     except Exception as e:
-        logger.error(f"Failed to access AI clients: {e}")
+        logger.error(f"Failed to initialize AI clients: {e}")
         return False
 
 
 def get_embedding_client():
-    """Get the global embedding model instance."""
-    return embedding_model
+    """Get the global embedding model instance with lazy loading."""
+    return get_embedding_model_safe()
 
 
 def get_llm_client():
-    """Get the global LLM instance.""" 
-    return llm
+    """Get the global LLM instance with lazy loading."""
+    return get_llm_safe()
 
 
 def get_access_token_client():
-    """Get the global access token."""
-    return access_token
+    """Get the global access token with lazy loading."""
+    return get_access_token_safe()
 
 
 def generate_embeddings(texts: List[str]) -> List[List[float]]:
@@ -71,8 +69,9 @@ def generate_embeddings(texts: List[str]) -> List[List[float]]:
         Exception: If embedding model is not initialized or generation fails
     """
     try:
-        if embedding_model is None:
-            raise Exception("Embedding model not initialized")
+        embedding_client = get_embedding_model_safe()
+        if embedding_client is None:
+            raise Exception("Embedding model not available - check API configuration")
             
         logger.debug(f"Generating embeddings for {len(texts)} texts")
         
@@ -87,7 +86,7 @@ def generate_embeddings(texts: List[str]) -> List[List[float]]:
                 
             try:
                 # Use the LangChain embedding model to generate embeddings
-                text_embeddings = embedding_model.embed_documents([text.strip()])
+                text_embeddings = embedding_client.embed_documents([text.strip()])
                 embedding_vector = text_embeddings[0]
                 embeddings.append(embedding_vector)
                 
@@ -118,8 +117,9 @@ def generate_response(prompt: str) -> Optional[str]:
         Exception: If LLM is not initialized or generation fails
     """
     try:
-        if llm is None:
-            raise Exception("LLM not initialized")
+        llm_client = get_llm_safe()
+        if llm_client is None:
+            raise Exception("LLM not available - check API configuration")
             
         logger.debug(f"Generating response for prompt (length: {len(prompt)})")
         
@@ -128,8 +128,8 @@ def generate_response(prompt: str) -> Optional[str]:
             return None
             
         try:
-            # Use the global LLM instance to generate response
-            response = llm.invoke(prompt.strip())
+            # Use the LLM client to generate response
+            response = llm_client.invoke(prompt.strip())
             
             # Extract content from response
             if hasattr(response, 'content'):

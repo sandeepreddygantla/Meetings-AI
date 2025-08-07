@@ -151,18 +151,63 @@ def get_embedding_model(access_token: str = None):
         logger.error(f"Error creating embedding model: {e}")
         return None
 
-# Initialize global variables (keeping same structure)
-# These will be None if API keys are not available, but won't crash the module load
-try:
-    access_token = get_access_token()
-    embedding_model = get_embedding_model(access_token)
-    llm = get_llm(access_token)
-    logger.info("LLM and embedding model initialized successfully")
-except Exception as e:
-    logger.warning(f"Could not initialize LLM/embedding model at startup: {e}")
-    access_token = None
-    embedding_model = None
-    llm = None
+# Global variables for lazy loading
+access_token = None
+embedding_model = None
+llm = None
+_clients_initialized = False
+_initialization_lock = threading.Lock()
+
+def ensure_ai_clients_initialized():
+    """
+    Lazy initialization of AI clients. Only initializes on first use.
+    Thread-safe implementation to prevent multiple initializations.
+    """
+    global access_token, embedding_model, llm, _clients_initialized
+    
+    if _clients_initialized:
+        return True
+    
+    with _initialization_lock:
+        # Double-check pattern to prevent race conditions
+        if _clients_initialized:
+            return True
+        
+        try:
+            logger.info("Lazy loading AI clients on first use...")
+            access_token = get_access_token()
+            embedding_model = get_embedding_model(access_token)
+            llm = get_llm(access_token)
+            
+            if embedding_model is None or llm is None:
+                logger.error("Failed to initialize AI clients - check API configuration")
+                return False
+            
+            _clients_initialized = True
+            logger.info("AI clients initialized successfully via lazy loading")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error during lazy AI client initialization: {e}")
+            return False
+
+def get_llm_safe():
+    """Get LLM client with lazy initialization."""
+    if not ensure_ai_clients_initialized():
+        return None
+    return llm
+
+def get_embedding_model_safe():
+    """Get embedding model with lazy initialization."""
+    if not ensure_ai_clients_initialized():
+        return None
+    return embedding_model
+
+def get_access_token_safe():
+    """Get access token with lazy initialization."""
+    if not ensure_ai_clients_initialized():
+        return None
+    return access_token
 
 @dataclass
 class DocumentChunk:
