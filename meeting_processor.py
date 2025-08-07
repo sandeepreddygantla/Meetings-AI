@@ -2113,10 +2113,7 @@ class EnhancedMeetingDocumentProcessor:
             chunk_overlap: Overlap between chunks  
             db_manager: External database manager instance (if None, creates new one)
         """
-        global llm, embedding_model, access_token
-        self.llm = llm
-        self.embedding_model = embedding_model
-        self.access_token = access_token
+        # Don't initialize AI clients here - use lazy loading via safe getters
         self.token_expiry = datetime.now() + timedelta(hours=1)
         
         # Text splitter for chunking
@@ -2137,6 +2134,21 @@ class EnhancedMeetingDocumentProcessor:
             logger.info("Created new database manager")
         
         logger.info("Enhanced Meeting Document Processor initialized with OpenAI")
+    
+    @property
+    def llm(self):
+        """Get LLM client using lazy loading"""
+        return get_llm_safe()
+    
+    @property
+    def embedding_model(self):
+        """Get embedding model using lazy loading"""
+        return get_embedding_model_safe()
+    
+    @property
+    def access_token(self):
+        """Get access token using lazy loading"""
+        return get_access_token_safe()
     
     def _detect_timeframe_from_query(self, query: str) -> Optional[str]:
         """Enhanced timeframe detection from natural language query"""
@@ -2287,29 +2299,21 @@ class EnhancedMeetingDocumentProcessor:
     def refresh_clients(self):
         """Refresh OpenAI clients with new API key (if needed)"""
         try:
-            global access_token, llm, embedding_model
+            global access_token, llm, embedding_model, _clients_initialized
 
             if hasattr(self, 'token_expiry') and datetime.now() >= self.token_expiry - timedelta(minutes=5):
                 logger.info("Refreshing access token...")
-                access_token = get_access_token()
-                self.access_token = access_token
+                # Force re-initialization by resetting the flag
+                _clients_initialized = False
+                ensure_ai_clients_initialized()
                 self.token_expiry = datetime.now() + timedelta(hours=1)
-
-                llm = get_llm(access_token)
-                embedding_model = get_embedding_model(access_token)
-                self.llm = llm
-                self.embedding_model = embedding_model
             else:
                 # Force refresh even if not expired
                 logger.info("Force refreshing access token...")
-                access_token = get_access_token()
-                self.access_token = access_token
+                # Force re-initialization by resetting the flag
+                _clients_initialized = False
+                ensure_ai_clients_initialized()
                 self.token_expiry = datetime.now() + timedelta(hours=1)
-
-                llm = get_llm(access_token)
-                embedding_model = get_embedding_model(access_token)
-                self.llm = llm
-                self.embedding_model = embedding_model
 
             logger.info("OpenAI clients refreshed successfully")
         except Exception as e:
