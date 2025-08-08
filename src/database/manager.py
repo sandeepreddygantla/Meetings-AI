@@ -8,8 +8,9 @@ import numpy as np
 from typing import List, Dict, Any, Optional, Tuple, Union
 from datetime import datetime
 import os
+from pathlib import Path
 
-from .vector_operations import VectorOperations
+from .vector_operations import VectorOperations, get_application_root
 from .sqlite_operations import SQLiteOperations
 
 # Import global variables and data classes from the main module
@@ -32,19 +33,31 @@ class DatabaseManager:
         Initialize the database manager
         
         Args:
-            db_path: Path to SQLite database file
-            index_path: Path to FAISS index file
+            db_path: Path to SQLite database file (relative paths resolved to application root)
+            index_path: Path to FAISS index file (relative paths resolved to application root)
         """
-        self.db_path = db_path
-        self.index_path = index_path
+        # Convert relative paths to absolute paths based on application root
+        app_root = get_application_root()
+        
+        if not os.path.isabs(db_path):
+            self.db_path = str(app_root / db_path)
+            logger.info(f"Database path resolved to: {self.db_path}")
+        else:
+            self.db_path = db_path
+            
+        if not os.path.isabs(index_path):
+            self.index_path = str(app_root / index_path)  
+            logger.info(f"Vector index path resolved to: {self.index_path}")
+        else:
+            self.index_path = index_path
         self.dimension = 3072  # text-embedding-3-large dimension
         
-        # Initialize both operations handlers
-        self.sqlite_ops = SQLiteOperations(db_path)
-        self.vector_ops = VectorOperations(index_path, self.dimension)
+        # Initialize both operations handlers with resolved paths
+        self.sqlite_ops = SQLiteOperations(self.db_path)
+        self.vector_ops = VectorOperations(self.index_path, self.dimension)
         
         # Load existing chunk metadata from database
-        self.vector_ops.rebuild_chunk_metadata(db_path)
+        self.vector_ops.rebuild_chunk_metadata(self.db_path)
         
         # Keep track of document metadata for compatibility
         self.document_metadata = {}

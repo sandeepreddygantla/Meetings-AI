@@ -13,11 +13,33 @@ import threading
 from typing import List, Tuple, Dict, Any, Optional
 from functools import lru_cache
 import sqlite3
+from pathlib import Path
 
 # Import global variables from the main module
 from meeting_processor import access_token, embedding_model, llm
 
 logger = logging.getLogger(__name__)
+
+
+def get_application_root() -> Path:
+    """
+    Get the application root directory (where flask_app.py and meeting_processor.py are located).
+    This ensures FAISS index files are saved in the correct location regardless of working directory.
+    """
+    # Get the path of this file (src/database/vector_operations.py)
+    current_file = Path(__file__)
+    
+    # Go up two levels: src/database -> src -> application root
+    app_root = current_file.parent.parent.parent
+    
+    # Verify we're in the right place by checking for key files
+    if (app_root / "flask_app.py").exists() and (app_root / "meeting_processor.py").exists():
+        logger.debug(f"Application root detected: {app_root.absolute()}")
+        return app_root.absolute()
+    else:
+        # Fallback: use current working directory
+        logger.warning(f"Could not detect application root from {current_file}, using current directory")
+        return Path.cwd()
 
 
 class VectorOperations:
@@ -28,11 +50,18 @@ class VectorOperations:
         Initialize vector operations with simple IndexFlatIP and search caching
         
         Args:
-            index_path: Path to FAISS index file
-            dimension: Vector dimension (3072 for text-embedding-3-large)
+            index_path: Path to FAISS index file (relative paths will be resolved to application root)
+            dimension: Vector dimension (3072 for text-embedding-3-large)  
             cache_size: Maximum number of search results to cache
         """
-        self.index_path = index_path
+        # Convert relative paths to absolute paths based on application root
+        if not os.path.isabs(index_path):
+            app_root = get_application_root()
+            self.index_path = str(app_root / index_path)
+            logger.info(f"Converted relative path '{index_path}' to absolute: '{self.index_path}'")
+        else:
+            self.index_path = index_path
+            logger.info(f"Using absolute path: '{self.index_path}'")
         self.dimension = dimension
         self.index = None
         
@@ -290,24 +319,57 @@ class VectorOperations:
             return []
     
     def save_index(self):
-        """Save FAISS index to disk"""
+        """Save FAISS index to disk with comprehensive path diagnostics"""
         try:
             if self.index:
-                logger.info(f"Attempting to save FAISS index to {self.index_path}")
-                faiss.write_index(self.index, self.index_path)
-                logger.info(f"Successfully saved FAISS index with {self.index.ntotal} vectors to {self.index_path}")
+                # Add comprehensive path diagnostics
+                logger.info(f"=== FAISS Save Index Diagnostics ===")
+                logger.info(f"Current working directory: {os.getcwd()}")
+                logger.info(f"Target index path: {self.index_path}")
+                logger.info(f"Index path is absolute: {os.path.isabs(self.index_path)}")
                 
-                # Verify file was created
-                import os
+                # Check directory permissions
+                index_dir = os.path.dirname(self.index_path)
+                logger.info(f"Index directory: {index_dir}")
+                logger.info(f"Directory exists: {os.path.exists(index_dir)}")
+                logger.info(f"Directory writable: {os.access(index_dir, os.W_OK)}")
+                
+                # Check if file already exists
+                if os.path.exists(self.index_path):
+                    logger.info(f"Index file exists, size: {os.path.getsize(self.index_path)} bytes")
+                    logger.info(f"File writable: {os.access(self.index_path, os.W_OK)}")
+                
+                # Test write permissions with a temporary file
+                try:
+                    test_file = self.index_path + ".tmp"
+                    with open(test_file, 'w') as f:
+                        f.write("test")
+                    os.remove(test_file)
+                    logger.info("✅ Write permission test: SUCCESS")
+                except Exception as perm_e:
+                    logger.error(f"❌ Write permission test: FAILED - {perm_e}")
+                
+                logger.info(f"Attempting to save FAISS index with {self.index.ntotal} vectors...")
+                faiss.write_index(self.index, self.index_path)
+                logger.info(f"✅ Successfully saved FAISS index to {self.index_path}")
+                
+                # Verify file was created and get detailed info
                 if os.path.exists(self.index_path):
                     file_size = os.path.getsize(self.index_path)
-                    logger.info(f"FAISS index file created: {self.index_path} ({file_size} bytes)")
+                    file_stat = os.stat(self.index_path)
+                    logger.info(f"✅ FAISS index file verified: {self.index_path}")
+                    logger.info(f"   - File size: {file_size} bytes")
+                    logger.info(f"   - Last modified: {time.ctime(file_stat.st_mtime)}")
                 else:
-                    logger.error(f"FAISS index file was NOT created: {self.index_path}")
+                    logger.error(f"❌ FAISS index file was NOT created: {self.index_path}")
+                    
+                logger.info(f"=== End FAISS Save Diagnostics ===")
             else:
                 logger.warning("No FAISS index to save (index is None)")
         except Exception as e:
-            logger.error(f"Error saving FAISS index: {e}")
+            logger.error(f"❌ Error saving FAISS index: {type(e).__name__}: {e}")
+            logger.error(f"   - Index path: {self.index_path}")
+            logger.error(f"   - Working directory: {os.getcwd()}")
             import traceback
             logger.error(f"Full traceback: {traceback.format_exc()}")
             raise
