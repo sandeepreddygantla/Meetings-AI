@@ -4,6 +4,7 @@ Handles document management, processing, and metadata operations.
 """
 import os
 import logging
+import threading
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 from werkzeug.utils import secure_filename
@@ -12,6 +13,10 @@ from src.database.manager import DatabaseManager
 from src.models.document import MeetingDocument, UploadJob
 
 logger = logging.getLogger(__name__)
+
+# Simple tracking for active operations
+_active_uploads = set()
+_upload_lock = threading.Lock()
 
 
 class DocumentService:
@@ -27,6 +32,18 @@ class DocumentService:
         """
         self.db_manager = db_manager
         self.processor = processor  # For backwards compatibility with existing processor methods
+    
+    def _get_worker_count(self):
+        """Get optimal worker count based on current load"""
+        with _upload_lock:
+            active_count = len(_active_uploads)
+            
+        if active_count == 0:
+            return 4  # Full speed for single user
+        elif active_count == 1:
+            return 3  # Balanced for two users
+        else:
+            return 2  # Conservative for multiple users
     
     def get_user_documents(self, user_id: str) -> Tuple[bool, List[Dict[str, Any]], str]:
         """
@@ -368,16 +385,27 @@ class DocumentService:
             def process_in_background():
                 """Background processing function"""
                 try:
+                    # Track this upload and get optimal worker count
+                    with _upload_lock:
+                        _active_uploads.add(user_id)
+                    
+                    worker_count = self._get_worker_count()
+                    logger.info(f"Starting upload with {worker_count} workers for user {user_id}")
+                    
                     self.processor.process_files_batch_async(
                         file_list,
                         user_id,
                         project_id,
                         meeting_id,
-                        max_workers=2,  # Limit concurrent processing
+                        max_workers=worker_count,
                         job_id=job_id  # Pass existing job_id
                     )
                 except Exception as e:
                     logger.error(f"Background processing error: {e}")
+                finally:
+                    # Clean up tracking
+                    with _upload_lock:
+                        _active_uploads.discard(user_id)
             
             # Start background processing
             thread = threading.Thread(target=process_in_background)

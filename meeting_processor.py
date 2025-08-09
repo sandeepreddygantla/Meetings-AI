@@ -4492,7 +4492,7 @@ Document: {chunk['filename']} ({chunk['date']})
 
     def process_files_batch_async(self, files: List[Dict], user_id: str, 
                                  project_id: str = None, meeting_id: str = None, 
-                                 max_workers: int = 3, job_id: str = None) -> Dict:
+                                 max_workers: int = 5, job_id: str = None) -> Dict:
         """Process multiple files asynchronously with threading"""
         if not files:
             return {'success': False, 'error': 'No files provided'}

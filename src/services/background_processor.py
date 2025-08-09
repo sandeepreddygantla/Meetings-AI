@@ -46,7 +46,7 @@ class BackgroundProcessor:
     Uses ThreadPoolExecutor for CPU-intensive tasks.
     """
     
-    def __init__(self, max_workers: int = 4):
+    def __init__(self, max_workers: int = 6):
         self.max_workers = max_workers
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="BgProcessor")
         self.tasks: Dict[str, BackgroundTask] = {}
@@ -217,8 +217,8 @@ class DocumentProcessingTasks:
             
             logger.info(f"Processing {total_chunks} document chunks for embeddings")
             
-            # Process in batches for better memory management
-            batch_size = 10
+            # Process in larger batches for better performance
+            batch_size = 50
             for i in range(0, total_chunks, batch_size):
                 batch = document_chunks[i:i + batch_size]
                 batch_texts = [chunk.content for chunk in batch]
