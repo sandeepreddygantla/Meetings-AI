@@ -21,11 +21,37 @@ import hashlib
 import httpx
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# Load environment variables with robust path detection
+def load_environment_variables():
+    """Load environment variables with multiple fallback paths for IIS compatibility"""
+    env_loaded = False
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Try multiple .env file locations
+    env_paths = [
+        os.path.join(current_dir, '.env'),  # Same directory as this script
+        '.env',  # Current working directory
+        os.path.join(os.getcwd(), '.env'),  # Explicit current working directory
+    ]
+    
+    for env_path in env_paths:
+        if os.path.exists(env_path):
+            load_dotenv(env_path, override=True)
+            logging.info(f"Successfully loaded environment variables from: {env_path}")
+            env_loaded = True
+            break
+    
+    if not env_loaded:
+        logging.warning(f"No .env file found. Searched paths: {env_paths}")
+        logging.info("Environment variables will be loaded from system environment")
+    
+    return env_loaded
 
-# Configure tiktoken cache
-tiktoken_cache_dir = os.path.abspath("tiktoken_cache")
+# Load environment variables
+load_environment_variables()
+
+# Configure tiktoken cache with absolute path
+tiktoken_cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tiktoken_cache")
 os.environ["TIKTOKEN_CACHE_DIR"] = tiktoken_cache_dir
 
 # Verify tiktoken cache exists (optional check)
@@ -37,10 +63,8 @@ else:
     logging.warning("Tiktoken cache directory not found - will be created automatically on first use")
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dotenv import load_dotenv
 
-# Force reload of environment variables
-load_dotenv(override=True)
+# Environment variables already loaded above
 
 # Ensure logs directory exists
 os.makedirs('logs', exist_ok=True)
@@ -158,10 +182,13 @@ llm = None
 _clients_initialized = False
 _initialization_lock = threading.Lock()
 
-def ensure_ai_clients_initialized():
+def ensure_ai_clients_initialized(retry_count=3):
     """
-    Lazy initialization of AI clients. Only initializes on first use.
+    Lazy initialization of AI clients with retry logic and enhanced error handling.
     Thread-safe implementation to prevent multiple initializations.
+    
+    Args:
+        retry_count: Number of retry attempts for initialization
     """
     global access_token, embedding_model, llm, _clients_initialized
     
@@ -173,23 +200,57 @@ def ensure_ai_clients_initialized():
         if _clients_initialized:
             return True
         
-        try:
-            logger.info("Lazy loading AI clients on first use...")
-            access_token = get_access_token()
-            embedding_model = get_embedding_model(access_token)
-            llm = get_llm(access_token)
-            
-            if embedding_model is None or llm is None:
-                logger.error("Failed to initialize AI clients - check API configuration")
-                return False
-            
-            _clients_initialized = True
-            logger.info("AI clients initialized successfully via lazy loading")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error during lazy AI client initialization: {e}")
-            return False
+        last_error = None
+        for attempt in range(retry_count):
+            try:
+                logger.info(f"Initializing AI clients (attempt {attempt + 1}/{retry_count})...")
+                
+                # Reload environment variables on retry attempts
+                if attempt > 0:
+                    logger.info("Reloading environment variables...")
+                    load_environment_variables()
+                
+                # Check for API key availability
+                api_key = os.getenv("OPENAI_API_KEY")
+                azure_client_id = os.getenv("AZURE_CLIENT_ID")
+                
+                if not api_key and not azure_client_id:
+                    error_msg = "No API configuration found. Check OPENAI_API_KEY or Azure credentials."
+                    logger.error(error_msg)
+                    if attempt == retry_count - 1:  # Last attempt
+                        return False
+                    continue
+                
+                # Initialize clients
+                access_token = get_access_token()
+                embedding_model = get_embedding_model(access_token)
+                llm = get_llm(access_token)
+                
+                if embedding_model is None or llm is None:
+                    error_msg = f"Failed to initialize AI clients - embedding_model: {embedding_model is not None}, llm: {llm is not None}"
+                    logger.error(error_msg)
+                    if attempt < retry_count - 1:
+                        logger.info("Retrying initialization in 2 seconds...")
+                        time.sleep(2)
+                        continue
+                    else:
+                        return False
+                
+                _clients_initialized = True
+                logger.info("✅ AI clients initialized successfully via lazy loading")
+                return True
+                
+            except Exception as e:
+                last_error = e
+                logger.error(f"❌ Error during AI client initialization (attempt {attempt + 1}): {e}")
+                if attempt < retry_count - 1:
+                    logger.info("Retrying initialization in 2 seconds...")
+                    time.sleep(2)
+                else:
+                    logger.error(f"Failed to initialize AI clients after {retry_count} attempts. Last error: {last_error}")
+                    return False
+        
+        return False
 
 def get_llm_safe():
     """Get LLM client with lazy initialization."""
@@ -3318,8 +3379,18 @@ Examples:
             # Generate query embedding
             logger.info("[STEPA] Checking embedding model availability...")
             if self.embedding_model is None:
-                logger.error("[CRITICAL] Embedding model not available")
-                return "Sorry, the system is not properly configured for queries.", ""
+                logger.warning("[WARNING] Embedding model not available - attempting fallback initialization...")
+                # Try to initialize AI clients one more time (fallback for IIS Application Initialization issues)
+                if ensure_ai_clients_initialized(retry_count=2):
+                    logger.info("[SUCCESS] Fallback initialization successful - re-checking embedding model...")
+                    # embedding_model is accessed via property, so it will get the fresh value
+                else:
+                    logger.error("[CRITICAL] Fallback initialization failed - embedding model still not available")
+                    return "Sorry, the system is not properly configured for queries. Please try again.", ""
+            
+            if self.embedding_model is None:
+                logger.error("[CRITICAL] Embedding model still not available after fallback initialization")
+                return "Sorry, the system is not properly configured for queries. Please try again.", ""
             
             logger.info("[OK] Embedding model available - generating query embedding...")
             query_embedding = self.embedding_model.embed_query(query)

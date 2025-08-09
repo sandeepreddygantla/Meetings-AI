@@ -52,3 +52,9 @@ sessions.db
 PERFORMANCE_OPTIMIZATIONS.md
 meeting_documents.db-shm
 meeting_documents.db-wal
+IIS_Phase1_Configuration_Steps.md
+IIS_Troubleshooting_Analysis.md
+.gitignore
+meeting_documents.db
+Phase1_Verification_Plan.md
+web.config.backup
