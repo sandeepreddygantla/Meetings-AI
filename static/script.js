@@ -250,25 +250,57 @@ document.addEventListener('DOMContentLoaded', function() {
     // Initialize mobile fixes
     initializeMobileFixes();
     
-    // Load all data for @ mentions (documents first, then folders)
-    Promise.all([
-        loadDocuments(),
-        loadProjects(),
-        loadMeetings()
-    ]).then(() => {
-        // Load folders after documents are ready
-        loadFolders();
+    // PROGRESSIVE LOADING: Load data asynchronously without blocking page
+    console.log('[Main] Starting progressive data loading...');
+    
+    
+    // Setup @ mention detection immediately (works with empty data initially)
+    setupAtMentionDetection();
+    
+    // Load critical data first (documents for @ mentions) - non-blocking
+    loadDocuments().then(() => {
+        console.log('[Main] ✅ Documents loaded - @ mentions enabled');
+        // Refresh mentions with new document data
+        if (window.mentionsManager) {
+            window.mentionsManager.loadDocuments();
+        }
     }).catch(error => {
-        console.error('[Main] Error during initial data loading:', error);
-        // Still try to load folders with fallback
-        loadFolders();
+        console.error('[Main] ❌ Failed to load documents:', error);
     });
     
-    // Setup @ mention detection
-    setupAtMentionDetection();
+    // Load secondary data in parallel - non-blocking
+    loadProjects().then(() => {
+        console.log('[Main] ✅ Projects loaded');
+        // Refresh mentions with new project data
+        if (window.mentionsManager) {
+            window.mentionsManager.loadProjects();
+        }
+    }).catch(error => {
+        console.error('[Main] ❌ Failed to load projects:', error);
+    });
+    
+    loadMeetings().then(() => {
+        console.log('[Main] ✅ Meetings loaded');
+        // Refresh mentions with new meeting data
+        if (window.mentionsManager) {
+            window.mentionsManager.loadMeetings();
+        }
+    }).catch(error => {
+        console.error('[Main] ❌ Failed to load meetings:', error);
+    });
+    
+    // Load folders last (least critical) - non-blocking
+    setTimeout(() => {
+        loadFolders().then(() => {
+            console.log('[Main] ✅ Folders loaded');
+        }).catch(error => {
+            console.error('[Main] ❌ Failed to load folders:', error);
+        });
+    }, 1000); // Small delay to prioritize other requests
     
     console.log('[Main] Application initialization completed');
 });
+
 
 // Enhanced event listeners setup
 function setupEventListeners() {
