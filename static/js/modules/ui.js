@@ -8,7 +8,7 @@ let sidebarOpen = false;
 let notificationQueue = [];
 
 function initializeUI() {
-    console.log('Initializing UI module');
+    // Initializing UI module
     
     // Setup sidebar toggle
     setupSidebarToggle();

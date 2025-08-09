@@ -3361,49 +3361,25 @@ Examples:
         """Answer user query using enhanced intelligence-aware search and context reconstruction"""
         
         try:
-            # ===== DEBUG LOGGING: MAIN PROCESSOR ENTRY =====
-            logger.info("[PROCESSOR] MeetingProcessor.answer_query_with_intelligence() - ENTRY POINT")
-            logger.info("=" * 80)
-            logger.info(f"[PROCESSING] QUERY: '{query}'")
-            logger.info(f"[USER] User ID: {user_id}")
-            logger.info(f"[PARAMS] Parameters:")
-            logger.info(f"   - document_ids: {document_ids}")
-            logger.info(f"   - project_id: {project_id}")
-            logger.info(f"   - meeting_id: {meeting_id}")
-            logger.info(f"   - meeting_ids: {meeting_ids}")
-            logger.info(f"   - date_filters: {date_filters}")
-            logger.info(f"   - folder_path: {folder_path}")
-            logger.info(f"   - context_limit: {context_limit}")
-            logger.info("=" * 80)
-            
             # Generate query embedding
-            logger.info("[STEPA] Checking embedding model availability...")
             if self.embedding_model is None:
-                logger.warning("[WARNING] Embedding model not available - attempting fallback initialization...")
-                # Try to initialize AI clients one more time (fallback for IIS Application Initialization issues)
                 if ensure_ai_clients_initialized(retry_count=2):
-                    logger.info("[SUCCESS] Fallback initialization successful - re-checking embedding model...")
-                    # embedding_model is accessed via property, so it will get the fresh value
+                    pass  # embedding_model is accessed via property, so it will get the fresh value
                 else:
-                    logger.error("[CRITICAL] Fallback initialization failed - embedding model still not available")
+                    logger.error("Embedding model not available")
                     return "Sorry, the system is not properly configured for queries. Please try again.", ""
             
             if self.embedding_model is None:
-                logger.error("[CRITICAL] Embedding model still not available after fallback initialization")
+                logger.error("Embedding model still not available")
                 return "Sorry, the system is not properly configured for queries. Please try again.", ""
             
-            logger.info("[OK] Embedding model available - generating query embedding...")
             query_embedding = self.embedding_model.embed_query(query)
             query_vector = np.array(query_embedding)
-            logger.info(f"[EMBEDDING] Query embedding generated: {query_vector.shape} dimensions")
             
             # Analyze query to determine filters
-            logger.info("[STEPB] Analyzing query for automatic filters...")
             search_filters = self._analyze_query_for_filters(query)
-            logger.info(f"[AUTO] Automatic filters detected: {search_filters}")
             
             # Apply user context filters
-            logger.info("[STEPC] Applying user-provided filters...")
             original_filters = dict(search_filters)  # Keep copy for comparison
             
             if meeting_ids:

@@ -34,7 +34,7 @@ const ModuleLoader = {
             return new Promise((resolve, reject) => {
                 script.onload = () => {
                     this.loadedModules.add(moduleName);
-                    console.log(`Module ${moduleName} loaded successfully`);
+                    // Module loaded successfully
                     resolve(true);
                 };
                 script.onerror = () => {
@@ -57,11 +57,11 @@ const ModuleLoader = {
 
 // Core initialization function
 function initializeCore() {
-    console.log('Core functionality initialized');
+    // Core functionality initialized
     
     // Load essential modules immediately
     ModuleLoader.loadModules(['ui', 'api']).then(() => {
-        console.log('Essential modules loaded');
+        // Essential modules loaded
         if (typeof initializeUI === 'function') {
             initializeUI();
         }
@@ -70,7 +70,7 @@ function initializeCore() {
     // Load non-essential modules after a delay
     setTimeout(() => {
         ModuleLoader.loadModules(['upload', 'chat', 'document-management']).then(() => {
-            console.log('Additional modules loaded');
+            // Additional modules loaded
         });
     }, 1000);
 }

@@ -61,21 +61,21 @@ class MentionHandler {
      * Set preloaded data from app initializer to avoid API calls
      */
     setPreloadedData(data) {
-        console.log('[Mentions] Using preloaded data, skipping API calls');
+        // Using preloaded data
         
         if (data.projects) {
             this.availableProjects = data.projects;
-            console.log('[Mentions] Projects set from preloaded data:', this.availableProjects.length);
+            // Projects set from preloaded data
         }
         
         if (data.meetings) {
             this.availableMeetings = data.meetings;
-            console.log('[Mentions] Meetings set from preloaded data:', this.availableMeetings.length);
+            // Meetings set from preloaded data
         }
         
         if (data.documents) {
             this.availableDocuments = data.documents;
-            console.log('[Mentions] Documents set from preloaded data:', this.availableDocuments.length);
+            // Documents set from preloaded data
         }
         
         // Process folders from documents
@@ -91,7 +91,7 @@ class MentionHandler {
             if (response.ok) {
                 const data = await response.json();
                 this.availableProjects = data.projects || [];
-                console.log('[Mentions] Projects loaded:', this.availableProjects.length);
+                // Projects loaded
             }
         } catch (error) {
             console.error('Error loading projects:', error);
@@ -107,7 +107,7 @@ class MentionHandler {
             if (response.ok) {
                 const data = await response.json();
                 this.availableMeetings = data.meetings || [];
-                console.log('[Mentions] Meetings loaded:', this.availableMeetings.length);
+                // Meetings loaded
             }
         } catch (error) {
             console.error('Error loading meetings:', error);
@@ -123,7 +123,7 @@ class MentionHandler {
             if (response.ok) {
                 const data = await response.json();
                 this.availableDocuments = data.documents || [];
-                console.log('[Mentions] Documents loaded:', this.availableDocuments.length);
+                // Documents loaded
             }
         } catch (error) {
             console.error('Error loading documents:', error);
@@ -144,7 +144,7 @@ class MentionHandler {
                 }
             });
             this.availableFolders = Array.from(folders).map(path => ({ path }));
-            console.log('Folders extracted:', this.availableFolders.length);
+            // Folders extracted
         } catch (error) {
             console.error('Error loading folders:', error);
         }
@@ -310,7 +310,7 @@ class MentionHandler {
     showDropdown(mention) {
         // Disabled: The main script.js already handles enhanced dropdowns
         // This prevents the duplicate dropdown that shows "No results found"
-        console.log('[MentionHandler] showDropdown() disabled - using main script enhanced dropdown');
+        // showDropdown() disabled - using main script enhanced dropdown
         return;
     }
     

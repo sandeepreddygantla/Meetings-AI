@@ -37,41 +37,19 @@ def create_chat_blueprint(base_path: str, chat_service: ChatService) -> Blueprin
             date_filters = data.get('date_filters', None)
             folder_path = data.get('folder_path', None)
             
-            # ===== DEBUG LOGGING: QUERY ENTRY POINT =====
-            logger.info("=" * 80)
-            logger.info("[QUERY] NEW CHAT QUERY RECEIVED")
-            logger.info("=" * 80)
-            logger.info(f"[USER] User ID: {current_user.user_id}")
-            logger.info(f"[QUESTION] Question: '{message}'")
-            logger.info(f"[FILTERS] Filters Applied:")
-            logger.info(f"   - Document IDs: {document_ids}")
-            logger.info(f"   - Project ID: {project_id}")
-            logger.info(f"   - Project IDs: {project_ids}")
-            logger.info(f"   - Meeting IDs: {meeting_ids}")
-            logger.info(f"   - Date Filters: {date_filters}")
-            logger.info(f"   - Folder Path: {folder_path}")
-            logger.info("[START] Starting query processing pipeline...")
-            
             if not message:
-                logger.error("[ERROR] QUERY REJECTED: No message provided")
                 return jsonify({'success': False, 'error': 'No message provided'}), 400
             
             # Validate filters
-            logger.info("[STEP1] Validating chat filters...")
             is_valid, validation_error = chat_service.validate_chat_filters(
                 current_user.user_id, document_ids, project_id, meeting_ids
             )
             
             if not is_valid:
-                logger.error(f"[ERROR] FILTER VALIDATION FAILED: {validation_error}")
+                logger.error(f"Filter validation failed: {validation_error}")
                 return jsonify({'success': False, 'error': validation_error}), 400
             
-            logger.info("[OK] Step 1: Filter validation passed")
-            
             # Process chat query
-            logger.info("[STEP2] Starting chat query processing...")
-            logger.info("   -> Routing to ChatService.process_chat_query()")
-            
             response, follow_up_questions, timestamp = chat_service.process_chat_query(
                 message=message,
                 user_id=current_user.user_id,
@@ -83,22 +61,9 @@ def create_chat_blueprint(base_path: str, chat_service: ChatService) -> Blueprin
                 folder_path=folder_path
             )
             
-            # ===== DEBUG LOGGING: FINAL RESPONSE =====
-            logger.info("=" * 80)
-            logger.info("[COMPLETE] CHAT QUERY PROCESSING COMPLETED")
-            logger.info("=" * 80)
-            logger.info(f"[RESPONSE] Final Response Length: {len(response)} characters")
-            logger.info(f"[FOLLOWUP] Follow-up Questions: {len(follow_up_questions)} generated")
-            logger.info(f"[TIME] Processing Timestamp: {timestamp}")
-            
             # Check for "no relevant information" responses
             if "no relevant information" in response.lower() or "couldn't find" in response.lower():
-                logger.error("[WARNING] DETECTED: 'No relevant information' response - this indicates search issues!")
-            else:
-                logger.info("[SUCCESS] Response contains relevant information")
-            
-            logger.info("[SEND] Sending response to client...")
-            logger.info("=" * 80)
+                logger.warning("Query returned no relevant information")
             
             return jsonify({
                 'success': True,

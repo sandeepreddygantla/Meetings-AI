@@ -13,7 +13,7 @@ from src.config.settings import setup_flask_config, get_base_path
 from src.config.database import setup_database_session, ensure_directories_exist
 
 # Import AI client initialization
-from src.ai.llm_client import initialize_ai_clients
+from meeting_processor import ensure_ai_clients_initialized as initialize_ai_clients
 
 # Import database manager
 from src.database.manager import DatabaseManager
@@ -39,7 +39,6 @@ except ImportError as e:
     EnhancedMeetingDocumentProcessor = None
 
 # Ensure logs directory exists
-import os
 os.makedirs('logs', exist_ok=True)
 
 # Configure logging

@@ -222,7 +222,7 @@ function formatMarkdownToHTMLBasic(text) {
 // Find this line in the DOMContentLoaded event listener:
 // Main initialization on DOM ready
 document.addEventListener('DOMContentLoaded', function() {
-    console.log('[Main] DOM loaded, initializing application...');
+    // Initialize application
     
     // Initialize markdown parser
     initializeMarkdownParser();
@@ -251,7 +251,7 @@ document.addEventListener('DOMContentLoaded', function() {
     initializeMobileFixes();
     
     // PROGRESSIVE LOADING: Load data asynchronously without blocking page
-    console.log('[Main] Starting progressive data loading...');
+    // Progressive data loading
     
     
     // Setup @ mention detection immediately (works with empty data initially)
@@ -259,46 +259,41 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Load critical data first (documents for @ mentions) - non-blocking
     loadDocuments().then(() => {
-        console.log('[Main] ✅ Documents loaded - @ mentions enabled');
         // Refresh mentions with new document data
         if (window.mentionsManager) {
             window.mentionsManager.loadDocuments();
         }
     }).catch(error => {
-        console.error('[Main] ❌ Failed to load documents:', error);
+        console.error('[Main] Failed to load documents:', error);
     });
     
     // Load secondary data in parallel - non-blocking
     loadProjects().then(() => {
-        console.log('[Main] ✅ Projects loaded');
         // Refresh mentions with new project data
         if (window.mentionsManager) {
             window.mentionsManager.loadProjects();
         }
     }).catch(error => {
-        console.error('[Main] ❌ Failed to load projects:', error);
+        console.error('[Main] Failed to load projects:', error);
     });
     
     loadMeetings().then(() => {
-        console.log('[Main] ✅ Meetings loaded');
         // Refresh mentions with new meeting data
         if (window.mentionsManager) {
             window.mentionsManager.loadMeetings();
         }
     }).catch(error => {
-        console.error('[Main] ❌ Failed to load meetings:', error);
+        console.error('[Main] Failed to load meetings:', error);
     });
     
     // Load folders last (least critical) - non-blocking
     setTimeout(() => {
-        loadFolders().then(() => {
-            console.log('[Main] ✅ Folders loaded');
-        }).catch(error => {
-            console.error('[Main] ❌ Failed to load folders:', error);
+        loadFolders().catch(error => {
+            console.error('[Main] Failed to load folders:', error);
         });
     }, 1000); // Small delay to prioritize other requests
     
-    console.log('[Main] Application initialization completed');
+    // Application initialization completed
 });
 
 
@@ -551,19 +546,16 @@ async function sendMessage() {
         } else {
             queryMessage = "Please provide information from the selected documents.";
         }
-        console.log('Generated default query for mention-only input:', queryMessage);
+        // Generated default query for mention-only input
     }
     
     // Debug logging
-    console.log('Parsed message data:', { cleanMessage, documentIds, projectIds, meetingIds, dateFilters, folderPath });
-    if (folderPath) {
-        console.log('✅ Folder path detected:', folderPath);
-    }
+    // Message parsing complete
     
     // Check if this is a summary query and show notification
     const isSummaryQuery = detectSummaryQuery(message);
     if (isSummaryQuery && !documentIds) {
-        showNotification('📊 Processing summary across all available documents...');
+        showNotification('📊 Processing summary across all available documents...', 'info', 4000);
     }
 
     // Add user message to UI and history
@@ -719,7 +711,7 @@ function addMessageToUI(sender, content, updateHistory = true) {
 
 function copyToClipboard(text) {
     navigator.clipboard.writeText(text).then(function() {
-        showNotification('Copied to clipboard!');
+        showNotification('Copied to clipboard!', 'success', 2000);
     }).catch(function() {
         // Fallback for older browsers
         const textArea = document.createElement('textarea');
@@ -728,12 +720,12 @@ function copyToClipboard(text) {
         textArea.select();
         document.execCommand('copy');
         document.body.removeChild(textArea);
-        showNotification('Copied to clipboard!');
+        showNotification('Copied to clipboard!', 'success', 2000);
     });
 }
 
 
-function showNotification(message, type = 'success') {
+function showNotification(message, type = 'success', autoClose = null) {
     
     // Allow multiple notifications to stack - don't remove existing ones
     // const existingNotifications = document.querySelectorAll('.notification');
@@ -850,12 +842,44 @@ function showNotification(message, type = 'success') {
         document.addEventListener('keydown', handleEscapeKey);
     }
     
-    // Remove auto-close - notifications now only close manually
-    // setTimeout(() => {
-    //     if (notification.parentNode) {
-    //         notification.remove();
-    //     }
-    // }, 5000);
+    // Smart auto-close logic
+    if (autoClose === null) {
+        // Auto-determine based on type and message content
+        if (type === 'error' || type === 'warning') {
+            // Check if it's a user input validation error or action required
+            const requiresAction = message.toLowerCase().includes('please') ||
+                                 message.toLowerCase().includes('required') ||
+                                 message.toLowerCase().includes('select') ||
+                                 message.toLowerCase().includes('enter') ||
+                                 message.toLowerCase().includes('not found') ||
+                                 message.toLowerCase().includes('failed') ||
+                                 message.toLowerCase().includes('error') ||
+                                 message.toLowerCase().includes('validation') ||
+                                 message.toLowerCase().includes('unsupported') ||
+                                 message.toLowerCase().includes('empty') ||
+                                 message.toLowerCase().includes('large') ||
+                                 message.toLowerCase().includes('network') ||
+                                 message.toLowerCase().includes('connection');
+            
+            autoClose = requiresAction ? false : 6000; // 6 seconds for non-critical warnings
+        } else if (type === 'info') {
+            autoClose = 4000; // 4 seconds for info messages
+        } else if (type === 'success') {
+            autoClose = 3000; // 3 seconds for success messages
+        } else {
+            autoClose = 4000; // Default 4 seconds
+        }
+    }
+    
+    // Auto-close if specified
+    if (autoClose && autoClose > 0) {
+        setTimeout(() => {
+            if (notification.parentNode) {
+                notification.remove();
+                repositionNotifications();
+            }
+        }, autoClose);
+    }
 }
 
 function repositionNotifications() {
@@ -922,7 +946,7 @@ function clearFollowUpQuestions() {
 async function loadDocuments() {
     // Prevent concurrent calls
     if (isLoadingDocuments) {
-        console.log('[Main] Documents already loading, skipping...');
+        // Documents already loading
         return;
     }
     
@@ -933,7 +957,7 @@ async function loadDocuments() {
             const data = await response.json();
             if (data.success) {
                 availableDocuments = data.documents;
-                console.log('[Main] Loaded documents:', availableDocuments.length);
+                // Documents loaded successfully
                 // Documents loaded successfully - folders will be loaded separately
             }
         }
@@ -1724,24 +1748,21 @@ function parseMessageForDocuments(message) {
             case 'folder_files':
             case 'folder_selected':
                 // Case-insensitive folder lookup
-                console.log(`Looking for folder: "${mention.value}"`);
-                console.log('Available folders:', availableFolders.map(f => ({ name: f.display_name, path: f.folder_path })));
+                // Looking for folder in available options
                 
                 const folder = availableFolders.find(f => 
                     f.display_name.toLowerCase() === mention.value.toLowerCase()
                 );
                 if (folder) {
                     filterData.folderPath = folder.folder_path;
-                    console.log('✅ Found folder:', folder.display_name, 'Path:', folder.folder_path);
+                    // Folder found
                 } else {
-                    console.log('❌ Folder not found:', mention.value);
-                    console.log('Available folder names:', availableFolders.map(f => f.display_name));
+                    // Folder not found in available options
                 }
                 break;
             case 'file':
                 if (!filterData.documentIds) filterData.documentIds = [];
-                console.log(`Looking for file: "${mention.value}"`);
-                console.log('Available files:', availableDocuments.map(d => ({ filename: d.filename, original_filename: d.original_filename, document_id: d.document_id })));
+                // Looking for file in available documents
                 
                 // Try exact match first
                 let document = availableDocuments.find(d => d.filename === mention.value);
@@ -1749,7 +1770,7 @@ function parseMessageForDocuments(message) {
                 // If not found, try original filename
                 if (!document) {
                     document = availableDocuments.find(d => d.original_filename === mention.value);
-                    console.log(`Exact filename match failed, trying original_filename match: ${document ? 'found' : 'not found'}`);
+                    // Trying original filename match
                 }
                 
                 // If still not found, try partial match
@@ -1758,15 +1779,14 @@ function parseMessageForDocuments(message) {
                         d.filename.includes(mention.value) || mention.value.includes(d.filename) ||
                         (d.original_filename && (d.original_filename.includes(mention.value) || mention.value.includes(d.original_filename)))
                     );
-                    console.log(`Partial match attempt: ${document ? 'found' : 'not found'}`);
+                    // Attempting partial filename match
                 }
                 
                 if (document) {
-                    console.log(`✅ Found document: ${document.filename} (ID: ${document.document_id})`);
+                    // Document found
                     filterData.documentIds.push(document.document_id);
                 } else {
-                    console.log(`❌ Document not found: ${mention.value}`);
-                    console.log('Available filenames:', availableDocuments.map(d => d.filename));
+                    // Document not found in available options
                 }
                 break;
         }
@@ -1793,7 +1813,7 @@ function parseMessageForDocuments(message) {
 
 function parseEnhancedMentionsFromMessage(message) {
     const mentions = [];
-    console.log('Parsing message for mentions:', message);
+    // Parsing message for mentions
     
     // Parse @ mentions (projects, meetings, dates, files)
     const atMentionRegex = /@(project|meeting|date|file):([^@?]+?)(?=\s+(?:what|how|when|where|why|who|tell|explain|show|give|list|can|could|would|should|do|did|does|is|are|were|was)|$|@)/gi;
@@ -1823,7 +1843,7 @@ function parseEnhancedMentionsFromMessage(message) {
     // Capture everything after # until we hit common action words
     const folderSelectionRegex = /#([^#>]+?)(?=\s+(?:give|show|tell|what|how|when|where|summarize|summary|list|find|search|get|provide|explain|analyze|report|create|add|update|delete|help|do)|$)/gi;
     while ((match = folderSelectionRegex.exec(message)) !== null) {
-        console.log('Folder regex matched:', match[1].trim(), 'from:', match[0]);
+        // Folder mention found
         mentions.push({
             type: 'folder_selected',
             prefix: '',
@@ -2074,7 +2094,7 @@ function selectSingleFile(doc) {
 async function loadProjects() {
     // Prevent concurrent calls
     if (isLoadingProjects) {
-        console.log('[Main] Projects already loading, skipping...');
+        // Projects already loading
         return;
     }
     
@@ -2085,7 +2105,7 @@ async function loadProjects() {
             const data = await response.json();
             if (data.success && data.projects) {
                 availableProjects = data.projects;
-                console.log('[Main] Loaded projects:', availableProjects.length);
+                // Projects loaded successfully
             }
         }
     } catch (error) {
@@ -2098,7 +2118,7 @@ async function loadProjects() {
 async function loadMeetings() {
     // Prevent concurrent calls
     if (isLoadingMeetings) {
-        console.log('[Main] Meetings already loading, skipping...');
+        // Meetings already loading
         return;
     }
     
@@ -2109,7 +2129,7 @@ async function loadMeetings() {
             const data = await response.json();
             if (data.success && data.meetings) {
                 availableMeetings = data.meetings;
-                console.log('[Main] Loaded meetings:', availableMeetings.length);
+                // Meetings loaded successfully
             }
         }
     } catch (error) {
@@ -2123,7 +2143,7 @@ async function loadMeetings() {
 async function loadFolders() {
     // Prevent concurrent calls
     if (isLoadingFolders) {
-        console.log('[Main] Folders already loading, skipping...');
+        // Folders already loading
         return;
     }
     
@@ -2136,24 +2156,20 @@ async function loadFolders() {
         
         // Use already loaded documents instead of making another API call
         if (availableDocuments && availableDocuments.length > 0) {
-            console.log('[Main] Using cached documents for folder loading:', availableDocuments.length);
+            // Using cached documents for folder loading
             const data = { success: true, documents: availableDocuments };
             
             if (data.success && data.documents) {
                 // Extract unique folder paths from documents
-                console.log('[Main] All documents in loadFolders:', data.documents.length);
-                data.documents.forEach((doc, i) => {
-                    console.log(`[Main] Doc ${i}: ${doc.filename}, folder_path: "${doc.folder_path}" (type: ${typeof doc.folder_path}), project: ${doc.project_name}, project_id: ${doc.project_id}`);
-                });
+                // Processing documents for folder structure
                 
                 const docsWithFolders = data.documents.filter(doc => doc.folder_path);
-                console.log('Documents with folder_path:', docsWithFolders);
+                // Documents processed for folder structure
                 const folderPaths = [...new Set(data.documents
                     .filter(doc => doc.folder_path && doc.folder_path.trim())
                     .map(doc => doc.folder_path))];
                 
-                console.log('Unique folder paths found:', folderPaths);
-                console.log('Folder paths length:', folderPaths.length);
+                // Unique folder paths identified
                 
                 if (folderPaths.length === 0) {
                     // If no folder_path, try to infer from project_id or create default folders
@@ -2173,7 +2189,7 @@ async function loadFolders() {
                         let folderName;
                         let actualFolderPath = `user_folder/project_${projectId}`; // fallback
                         
-                        console.log(`[Main] Processing project group: ${projectId}, documents: ${projectGroups[projectId].length}`);
+                        // Processing project group
                         
                         if (projectId === 'default') {
                             folderName = 'Default Folder';
@@ -2181,15 +2197,15 @@ async function loadFolders() {
                             // Find the actual project name from availableProjects
                             const project = availableProjects.find(p => p.project_id === projectId);
                             folderName = project ? project.project_name : `Project ${index + 1}`;
-                            console.log(`[Main] Project ${projectId} -> name: ${folderName}`);
+                            // Project folder mapped
                             
                             // Use actual folder_path from documents if available
                             const docWithFolderPath = projectGroups[projectId].find(doc => doc.folder_path);
                             if (docWithFolderPath) {
                                 actualFolderPath = docWithFolderPath.folder_path;
-                                console.log(`Project "${folderName}" (${projectId}) - Using actual folder path: ${actualFolderPath}`);
+                                // Using actual folder path
                             } else {
-                                console.log(`Project "${folderName}" (${projectId}) - No folder_path found, using fallback: ${actualFolderPath}`);
+                                // Using fallback folder path
                             }
                         }
                         const folderObj = {
@@ -2200,7 +2216,7 @@ async function loadFolders() {
                             documents: projectGroups[projectId] // Store the documents in this folder
                         };
                         
-                        console.log(`[Main] Created folder: ${folderName}, path: ${actualFolderPath}, docs: ${folderObj.documents.length}`);
+                        // Folder created successfully
                         return folderObj;
                     });
                     
@@ -2216,11 +2232,11 @@ async function loadFolders() {
                             project_id: 'default',
                             documents: documentsWithoutProject // Only documents without project_id
                         });
-                        console.log(`[Main] Created Default Folder with ${documentsWithoutProject.length} documents`);
+                        // Default folder created
                     }
                     
                     availableFolders = projectFolders;
-                    console.log(`[Main] Final availableFolders:`, availableFolders.map(f => `${f.display_name} (${f.documents.length} docs)`));
+                    // Folders processed successfully
                 } else {
                     availableFolders = folderPaths.map(path => {
                         const parts = path.split('/');
@@ -2256,7 +2272,7 @@ async function loadFolders() {
             }
         } else {
             // Documents not loaded yet, use fallback folders
-            console.log('[Main] Documents not loaded yet for folders, using fallback folders...');
+            // Using fallback folders
             // Don't try to load documents here to avoid circular dependency
             
             // Fallback: Create default folders even if documents can't be loaded
@@ -2616,11 +2632,11 @@ function deleteConversation(conversationId) {
         persistAllData();
         
         // Show success notification
-        showNotification(`Conversation "${conversation.title}" deleted successfully`);
+        showNotification(`Conversation "${conversation.title}" deleted successfully`, 'success', 3000);
         
         
     } catch (error) {
-        showNotification('Error deleting conversation. Please try again.');
+        showNotification('Error deleting conversation. Please try again.', 'error', false);
     }
 }
 
@@ -2641,7 +2657,7 @@ function clearAllConversations() {
         showWelcomeScreen();
         updateConversationList();
         
-        showNotification('All conversations have been cleared.');
+        showNotification('All conversations have been cleared.', 'success', 3000);
         
         // Close settings modal
         const modal = document.querySelector('.modal');
@@ -2651,7 +2667,7 @@ function clearAllConversations() {
 
 function exportConversations() {
     if (savedConversations.length === 0) {
-        showNotification('No conversations to export.');
+        showNotification('No conversations to export.', 'info', false);
         return;
     }
     
@@ -2669,7 +2685,7 @@ function exportConversations() {
     link.download = `uhg-meeting-ai-conversations-${new Date().toISOString().split('T')[0]}.json`;
     link.click();
     
-    showNotification('Conversations exported successfully!');
+    showNotification('Conversations exported successfully!', 'success', 3000);
 }
 
 // Removed initializeApp() function - functionality moved to main initialization
@@ -2786,7 +2802,7 @@ function setupUploadAreaEventListeners() {
     const uploadArea = document.getElementById('upload-area');
     const fileInput = document.getElementById('file-input');
     
-    console.log('Setting up upload area listeners - Upload area:', uploadArea, 'File input:', fileInput);
+    // Setting up upload area listeners
     
     if (uploadArea && fileInput) {
         // Remove any existing listeners to prevent duplicates
@@ -2802,20 +2818,20 @@ function setupUploadAreaEventListeners() {
         uploadArea.addEventListener('drop', handleDrop);
         uploadArea.style.cursor = 'pointer';
         
-        console.log('Upload area event listeners added successfully');
+        // Upload area event listeners added
     } else {
         console.error('Upload area or file input not found when setting up listeners');
     }
 }
 
 function handleUploadAreaClick(e) {
-    console.log('Upload area clicked!', e);
+    // Upload area clicked
     e.preventDefault();
     e.stopPropagation();
     
     const fileInput = document.getElementById('file-input');
     if (fileInput) {
-        console.log('Triggering file input click');
+        // Triggering file input
         fileInput.click();
     } else {
         console.error('File input not found when handling click');
@@ -2827,7 +2843,7 @@ function removeUploadedFile(index) {
         const fileName = uploadedFiles[index].name;
         uploadedFiles.splice(index, 1);
         updateUploadedFilesList();
-        showNotification(`Removed ${fileName}`);
+        showNotification(`Removed ${fileName}`, 'success', 2500);
     }
 }
 
@@ -2873,26 +2889,26 @@ function addFilesToUpload(files) {
         const extension = '.' + file.name.split('.').pop().toLowerCase();
         
         if (!validExtensions.includes(extension)) {
-            showNotification(`❌ ${file.name}: Unsupported format. Supported: .docx, .txt, .pdf`);
+            showNotification(`❌ ${file.name}: Unsupported format. Supported: .docx, .txt, .pdf`, 'error', false);
             errorCount++;
             return;
         }
 
         if (file.size > maxSize) {
-            showNotification(`❌ ${file.name}: File too large (max 50MB)`);
+            showNotification(`❌ ${file.name}: File too large (max 50MB)`, 'error', false);
             errorCount++;
             return;
         }
 
         if (file.size === 0) {
-            showNotification(`❌ ${file.name}: File is empty`);
+            showNotification(`❌ ${file.name}: File is empty`, 'error', false);
             errorCount++;
             return;
         }
 
         // Check for duplicates in current upload list
         if (uploadedFiles.find(f => f.name === file.name)) {
-            showNotification(`${file.name}: File already added`, 'warning');
+            showNotification(`${file.name}: File already added`, 'warning', 4000);
             return;
         }
 
@@ -2924,11 +2940,11 @@ function addFilesToUpload(files) {
 
     // Show summary notification
     if (addedCount > 0) {
-        showNotification(`✅ Added ${addedCount} file${addedCount > 1 ? 's' : ''} for processing`);
+        showNotification(`✅ Added ${addedCount} file${addedCount > 1 ? 's' : ''} for processing`, 'success', false);
     }
     
     if (duplicateCount > 0) {
-        showNotification(`⚠️ ${duplicateCount} duplicate file${duplicateCount > 1 ? 's' : ''} detected`, 'warning');
+        showNotification(`⚠️ ${duplicateCount} duplicate file${duplicateCount > 1 ? 's' : ''} detected`, 'warning', 4000);
     }
     
     if (errorCount > 0) {
@@ -2938,7 +2954,7 @@ function addFilesToUpload(files) {
 function clearUploadedFiles() {
     uploadedFiles = [];
     updateUploadedFilesList();
-    showNotification('File list cleared');
+    showNotification('File list cleared', 'success', 2500);
 }
 
 // Helper function to check if a file already exists in the system
@@ -3069,32 +3085,31 @@ async function processFiles() {
 
     // Check if uploading to default project and show confirmation
     const projectSelect = document.getElementById('project-select');
-    console.log('Processing files - Project select value:', projectSelect.value);
-    console.log('Available projects:', availableProjects);
+    // Processing file upload
     
     // Find selected project
     const selectedProject = availableProjects.find(p => p.project_id === projectSelect.value);
-    console.log('Selected project:', selectedProject);
+    // Project selected for upload
     
     // Get selected option text as fallback
     const selectedOption = projectSelect.options[projectSelect.selectedIndex];
     const selectedProjectName = selectedOption ? selectedOption.text : '';
-    console.log('Selected project name from option text:', selectedProjectName);
+    // Project name determined
     
     // Show confirmation if explicitly selecting Default Project or if no project selected (which defaults to Default Project)
     const isDefaultProject = (selectedProject && selectedProject.project_name === 'Default Project') ||
                              (selectedProjectName === 'Default Project') ||
                              (!projectSelect.value || projectSelect.value === '' || projectSelect.value === 'Select a project...');
     
-    console.log('Is default project upload:', isDefaultProject);
+    // Checking if default project upload
     
     if (isDefaultProject) {
-        console.log('Showing default project confirmation modal');
+        // Showing confirmation modal
         showDefaultProjectUploadModal();
         return; // Stop here and wait for user confirmation
     }
     
-    console.log('Proceeding with regular upload');
+    // Proceeding with upload
     // If not default project, proceed directly
     performActualUpload();
 }
@@ -3112,14 +3127,14 @@ async function performActualUpload() {
         const duplicateFiles = uploadedFiles.filter(fileObj => fileObj.status === 'duplicate');
         
         if (filesToProcess.length === 0) {
-            showNotification('No valid files to process. Please remove duplicates or add new files.', 'warning');
+            showNotification('No valid files to process. Please remove duplicates or add new files.', 'warning', false);
             return;
         }
         
         // Show info about skipped duplicates
         if (duplicateFiles.length > 0) {
             const duplicateNames = duplicateFiles.map(f => f.name).join(', ');
-            showNotification(`Skipping ${duplicateFiles.length} duplicate file(s): ${duplicateNames}`, 'info');
+            showNotification(`Skipping ${duplicateFiles.length} duplicate file(s): ${duplicateNames}`, 'info', 4000);
         }
 
         // Set processing files to processing status
@@ -3150,13 +3165,13 @@ async function performActualUpload() {
                 // Show duplicate files warning if any from server
                 if (result.duplicates && result.duplicates.length > 0) {
                     const duplicateNames = result.duplicates.map(d => d.original_filename || d.filename).join(', ');
-                    showNotification(`Server detected additional duplicates: ${duplicateNames}`, 'warning');
+                    showNotification(`Server detected additional duplicates: ${duplicateNames}`, 'warning', 5000);
                 }
 
                 // Show validation errors if any
                 if (result.validation_errors && result.validation_errors.length > 0) {
                     const errorFiles = result.validation_errors.map(e => `${e.filename}: ${e.error}`).join(', ');
-                    showNotification(`File validation errors: ${errorFiles}`, 'warning');
+                    showNotification(`File validation errors: ${errorFiles}`, 'warning', false);
                 }
 
                 // Update UI to show processing has started
@@ -3173,7 +3188,7 @@ async function performActualUpload() {
                     fileObj.error = errorMessage;
                 });
                 updateUploadedFilesList();
-                showNotification(errorMessage, 'error');
+                showNotification(errorMessage, 'error', false);
             }
 
         } else {
@@ -3201,7 +3216,7 @@ async function performActualUpload() {
         });
         updateUploadedFilesList();
         
-        showNotification('Upload failed. Please check your connection and try again.', 'error');
+        showNotification('Upload failed. Please check your connection and try again.', 'error', false);
         
     } finally {
         // Reset button state
@@ -3286,7 +3301,7 @@ async function handleProcessingComplete(status) {
     const totalFiles = status.total_files || 0;
     if (successCount === totalFiles) {
         // All files processed successfully
-        showNotification(`✅ Successfully processed all ${successCount} documents!`);
+        showNotification(`✅ Successfully processed all ${successCount} documents!`, 'success', false);
         
         // Close modal after successful processing
         setTimeout(() => {
@@ -3294,10 +3309,10 @@ async function handleProcessingComplete(status) {
         }, 2000);
     } else if (successCount > 0) {
         // Some files failed
-        showNotification(`⚠️ Processed ${successCount} of ${totalFiles} documents. ${failedCount} failed.`, 'warning');
+        showNotification(`⚠️ Processed ${successCount} of ${totalFiles} documents. ${failedCount} failed.`, 'warning', false);
     } else {
         // All files failed
-        showNotification(`❌ Failed to process any documents. Please check the files and try again.`, 'error');
+        showNotification(`❌ Failed to process any documents. Please check the files and try again.`, 'error', false);
     }
     
     // Reset button
@@ -3322,7 +3337,7 @@ function handleProcessingError(message) {
     });
     
     updateUploadedFilesList();
-    showNotification(message || 'Processing failed', 'error');
+    showNotification(message || 'Processing failed', 'error', false);
     
     // Reset button
     processBtn.innerHTML = 'Process Files';
@@ -3350,7 +3365,7 @@ async function loadSystemStats(forceRefresh = false) {
                 // Cache the stats
                 statsCache = data.stats;
                 lastStatsUpdate = Date.now();
-                console.log('[Main] Loaded stats');
+                // Statistics loaded
                 return data.stats;
             }
         }
@@ -3370,18 +3385,18 @@ async function refreshSystem() {
                 statsCache = null;
                 lastStatsUpdate = null;
                 
-                showNotification('System refreshed successfully!');
+                showNotification('System refreshed successfully!', 'success', 3000);
                 
                 // Load fresh stats after refresh
                 await loadSystemStats(true);
             } else {
-                showNotification('Refresh failed: ' + (data.error || 'Unknown error'));
+                showNotification('Refresh failed: ' + (data.error || 'Unknown error'), 'error', false);
             }
         } else {
-            showNotification('Refresh failed. Please try again.');
+            showNotification('Refresh failed. Please try again.', 'error', false);
         }
     } catch (error) {
-        showNotification('Refresh failed. Please check your connection.');
+        showNotification('Refresh failed. Please check your connection.', 'error', false);
     }
 }
 
@@ -3432,7 +3447,7 @@ async function refreshStatsModal() {
 function clearStatsCache() {
     statsCache = null;
     lastStatsUpdate = null;
-    showNotification('Stats cache cleared');
+    showNotification('Stats cache cleared', 'success', 2500);
 }
 
 async function loadDetailedStats(forceRefresh = false) {
@@ -3646,7 +3661,7 @@ function showSettings() {
                         <button class="btn btn-secondary" onclick="clearStatsCache(); this.closest('.modal').remove();" style="margin-right: 12px;">
                             🗑️ Clear Stats Cache
                         </button>
-                        <button class="btn btn-secondary" onclick="loadSystemStats(true).then(() => showNotification('Stats refreshed'))">
+                        <button class="btn btn-secondary" onclick="loadSystemStats(true).then(() => showNotification('Stats refreshed', 'success', 2500))">
                             🔄 Refresh Stats Now
                         </button>
                     </div>
@@ -3899,13 +3914,13 @@ function showEditModal() {
     closeConversationMenu();
     
     if (!conversationId) {
-        showNotification('No conversation selected');
+        showNotification('No conversation selected', 'warning', false);
         return;
     }
     
     const conversation = savedConversations.find(c => c.id === conversationId);
     if (!conversation) {
-        showNotification('Conversation not found');
+        showNotification('Conversation not found', 'error', false);
         return;
     }
     
@@ -3953,13 +3968,13 @@ function confirmEdit() {
     const newTitle = input.value.trim();
     
     if (!newTitle) {
-        showNotification('Please enter a conversation name');
+        showNotification('Please enter a conversation name', 'warning', false);
         input.focus();
         return;
     }
     
     if (!currentMenuConversationId) {
-        showNotification('No conversation selected');
+        showNotification('No conversation selected', 'warning', false);
         closeEditModal();
         return;
     }
@@ -3967,7 +3982,7 @@ function confirmEdit() {
     // Find and update conversation
     const conversation = savedConversations.find(c => c.id === currentMenuConversationId);
     if (!conversation) {
-        showNotification('Conversation not found');
+        showNotification('Conversation not found', 'error', false);
         closeEditModal();
         return;
     }
@@ -3987,7 +4002,7 @@ function confirmEdit() {
     }
     
     closeEditModal();
-    showNotification(`Conversation renamed from "${oldTitle}" to "${newTitle}"`);
+    showNotification(`Conversation renamed from "${oldTitle}" to "${newTitle}"`, 'success', 3000);
 }
 
 function showDeleteModal() {
@@ -3997,13 +4012,13 @@ function showDeleteModal() {
     closeConversationMenu();
     
     if (!conversationId) {
-        showNotification('No conversation selected');
+        showNotification('No conversation selected', 'warning', false);
         return;
     }
     
     const conversation = savedConversations.find(c => c.id === conversationId);
     if (!conversation) {
-        showNotification('Conversation not found');
+        showNotification('Conversation not found', 'error', false);
         return;
     }
     
@@ -4031,14 +4046,14 @@ function closeDeleteModal() {
 
 function confirmDelete() {
     if (!currentMenuConversationId) {
-        showNotification('No conversation selected');
+        showNotification('No conversation selected', 'warning', false);
         closeDeleteModal();
         return;
     }
     
     const conversation = savedConversations.find(c => c.id === currentMenuConversationId);
     if (!conversation) {
-        showNotification('Conversation not found');
+        showNotification('Conversation not found', 'error', false);
         closeDeleteModal();
         return;
     }
@@ -4065,36 +4080,36 @@ function confirmDelete() {
         persistAllData();
         
         closeDeleteModal();
-        showNotification(`Conversation "${conversation.title}" deleted successfully`);
+        showNotification(`Conversation "${conversation.title}" deleted successfully`, 'success', 3000);
         
     } catch (error) {
         closeDeleteModal();
-        showNotification('Error deleting conversation. Please try again.');
+        showNotification('Error deleting conversation. Please try again.', 'error', false);
     }
 }
 
 // Authentication Functions
 async function checkAuthenticationStatus() {
     try {
-        console.log('[Main] Checking authentication status...');
+        // Checking authentication status
         const response = await fetch('/meetingsai/api/auth/status');
-        console.log('[Main] Auth response status:', response.status);
+        // Authentication response received
         
         if (response.ok) {
             const data = await response.json();
-            console.log('[Main] Auth response data:', data);
+            // Authentication successful
             if (data.authenticated) {
                 displayUserInfo(data.user);
-                console.log('[Main] Authentication successful');
+                // Authentication successful
                 return true;
             } else {
-                console.log('[Main] Not authenticated:', data);
+                // Not authenticated
             }
         } else {
-            console.log('[Main] Auth response not ok:', response.status, response.statusText);
+            // Auth response not ok
         }
         // If not authenticated, redirect to login
-        console.log('Redirecting to login...');
+        // Redirecting to login
         window.location.href = '/meetingsai/login';
         return false;
     } catch (error) {
@@ -4137,10 +4152,10 @@ async function logout() {
             // Redirect to login
             window.location.href = '/meetingsai/login';
         } else {
-            showNotification('Logout failed. Please try again.');
+            showNotification('Logout failed. Please try again.', 'error', false);
         }
     } catch (error) {
-        showNotification('Logout failed. Please try again.');
+        showNotification('Logout failed. Please try again.', 'error', false);
     }
 }
 
@@ -4232,7 +4247,7 @@ async function confirmCreateProject() {
     const description = descInput.value.trim();
     
     if (!projectName) {
-        showNotification('Project name is required');
+        showNotification('Project name is required', 'warning', false);
         nameInput.focus();
         return;
     }
@@ -4258,7 +4273,7 @@ async function confirmCreateProject() {
         const data = await response.json();
         
         if (data.success) {
-            showNotification('Project created successfully');
+            showNotification('Project created successfully', 'success', 3000);
             closeCreateProjectModal();
             
             // Reload projects and select the new one
@@ -4270,11 +4285,11 @@ async function confirmCreateProject() {
             if (data.error_code === 'DUPLICATE_NAME') {
                 showDuplicateProjectDialog(data.project_name);
             } else {
-                showNotification('Failed to create project: ' + data.error);
+                showNotification('Failed to create project: ' + data.error, 'error', false);
             }
         }
     } catch (error) {
-        showNotification('Failed to create project');
+        showNotification('Failed to create project', 'error', false);
     } finally {
         // Reset loading state
         isCreatingProject = false;
@@ -4355,7 +4370,7 @@ async function retryCreateProject() {
     const description = originalDescInput ? originalDescInput.value.trim() : '';
     
     if (!newProjectName) {
-        showNotification('Please enter a project name');
+        showNotification('Please enter a project name', 'warning', false);
         newProjectInput.focus();
         return;
     }
@@ -4380,7 +4395,7 @@ async function retryCreateProject() {
         const data = await response.json();
         
         if (data.success) {
-            showNotification('Project created successfully');
+            showNotification('Project created successfully', 'success', 3000);
             closeDuplicateProjectDialog();
             closeCreateProjectModal();
             
@@ -4393,11 +4408,11 @@ async function retryCreateProject() {
                 // Still duplicate, show another dialog
                 showDuplicateProjectDialog(data.project_name);
             } else {
-                showNotification('Failed to create project: ' + data.error);
+                showNotification('Failed to create project: ' + data.error, 'error', false);
             }
         }
     } catch (error) {
-        showNotification('Failed to create project');
+        showNotification('Failed to create project', 'error', false);
     } finally {
         // Reset loading state
         retryButton.disabled = false;
@@ -4597,7 +4612,7 @@ function showDefaultUserInfo() {
 
 function showAccountSettings() {
     // Placeholder for account settings functionality
-    showNotification('Account settings coming soon!');
+    showNotification('Account settings coming soon!', 'info', 4000);
     closeUserProfile();
 }
 
@@ -4630,7 +4645,7 @@ function addDateSuggestions(message) {
         // - Displaying timeline of available documents
         
         // For now, we'll just log it for debugging
-        showNotification('💡 Tip: You can use specific date ranges like "last week", "current month", or "last 3 months" for more precise results!', 'info');
+        showNotification('💡 Tip: You can use specific date ranges like "last week", "current month", or "last 3 months" for more precise results!', 'info', 6000);
     }
 }
 
@@ -4651,10 +4666,10 @@ sendMessage = function() {
 
 // Refresh system function
 function refreshSystem() {
-    console.log('Refreshing system...');
+    // Refreshing system
     
     // Show notification
-    showNotification('🔄 Refreshing system...', 'info');
+    showNotification('🔄 Refreshing system...', 'info', 4000);
     
     fetch('/meetingsai/api/refresh', {
         method: 'POST',
@@ -4666,15 +4681,15 @@ function refreshSystem() {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            showNotification('✅ System refreshed successfully', 'success');
-            console.log('System refresh successful:', data.message);
+            showNotification('✅ System refreshed successfully', 'success', 3000);
+            // System refresh successful
         } else {
-            showNotification('❌ Failed to refresh system: ' + (data.error || 'Unknown error'), 'error');
+            showNotification('❌ Failed to refresh system: ' + (data.error || 'Unknown error'), 'error', false);
             console.error('System refresh failed:', data.error);
         }
     })
     .catch(error => {
-        showNotification('❌ Network error during system refresh', 'error');
+        showNotification('❌ Network error during system refresh', 'error', false);
         console.error('System refresh error:', error);
     });
 }
@@ -4737,7 +4752,7 @@ async function loadDocumentManagementData() {
             renderDocumentList(managedDocuments);
             updateStorageStats(managedDocuments);
         } else {
-            showNotification('Failed to load documents: ' + documentsData.error, 'error');
+            showNotification('Failed to load documents: ' + documentsData.error, 'error', false);
         }
 
         if (projectsData.success) {
@@ -4749,7 +4764,7 @@ async function loadDocumentManagementData() {
 
     } catch (error) {
         console.error('Error loading document management data:', error);
-        showNotification('Failed to load document data', 'error');
+        showNotification('Failed to load document data', 'error', false);
         
         // Hide loading indicator
         const loadingIndicator = document.getElementById('document-loading');
@@ -4777,7 +4792,7 @@ function renderDocumentList(documents) {
                 const dateObj = new Date(doc.date);
                 if (!isNaN(dateObj.getTime())) {
                     meetingDate = dateObj.toLocaleDateString();
-                    console.log(`[DocMgmt] Document ${doc.filename}: Meeting date = ${meetingDate} (from ${doc.date})`);
+                    // Document meeting date resolved
                 } else {
                     throw new Error('Invalid date object');
                 }
@@ -4798,7 +4813,7 @@ function renderDocumentList(documents) {
             // Fallback to upload date if no meeting date
             try {
                 meetingDate = new Date(doc.created_at).toLocaleDateString() + ' (upload)';
-                console.log(`[DocMgmt] Document ${doc.filename}: Using upload date = ${meetingDate}`);
+                // Using upload date for document
             } catch (e) {
                 meetingDate = 'Invalid Date';
             }
@@ -4808,15 +4823,15 @@ function renderDocumentList(documents) {
         let projectName = 'No Project';
         if (doc.project_name && doc.project_name.trim()) {
             projectName = doc.project_name;
-            console.log(`[DocMgmt] Document ${doc.filename}: Using doc.project_name = ${projectName}`);
+            // Using project name from document
         } else if (doc.project_id && doc.project_id !== 'default') {
             // Try to find project name from availableProjects if project_name is missing
             const project = window.availableProjects?.find(p => p.project_id === doc.project_id);
             projectName = project ? project.project_name : `Project ${doc.project_id}`;
-            console.log(`[DocMgmt] Document ${doc.filename}: Resolved project_id ${doc.project_id} to ${projectName}`);
+            // Project name resolved from ID
         } else if (doc.project_id === 'default' || !doc.project_id) {
             projectName = 'Default Project';
-            console.log(`[DocMgmt] Document ${doc.filename}: Using Default Project (project_id: ${doc.project_id})`);
+            // Using Default Project
         } else {
             console.warn(`[DocMgmt] Document ${doc.filename}: Could not resolve project (project_id: ${doc.project_id}, project_name: ${doc.project_name})`);
         }
@@ -4995,7 +5010,7 @@ function clearDocumentSelection() {
 // Delete selected documents
 function deleteSelectedDocuments() {
     if (selectedDocumentIds.length === 0) {
-        showNotification('No documents selected for deletion', 'warning');
+        showNotification('No documents selected for deletion', 'warning', false);
         return;
     }
 
@@ -5071,7 +5086,7 @@ async function confirmDocumentDeletion() {
         closeDocumentDeleteModal();
         
         // Show loading notification
-        showNotification('🗑️ Deleting documents...', 'info');
+        showNotification('🗑️ Deleting documents...', 'info', 4000);
 
         let response;
         
@@ -5099,25 +5114,25 @@ async function confirmDocumentDeletion() {
 
         if (result.success) {
             const count = selectedDocumentIds.length;
-            showNotification(`✅ Successfully deleted ${count} document${count > 1 ? 's' : ''}`, 'success');
+            showNotification(`✅ Successfully deleted ${count} document${count > 1 ? 's' : ''}`, 'success', 3500);
             
             // Refresh the document list
             await loadDocumentManagementData();
             clearDocumentSelection();
             
         } else {
-            showNotification('❌ Failed to delete documents: ' + result.error, 'error');
+            showNotification('❌ Failed to delete documents: ' + result.error, 'error', false);
         }
 
     } catch (error) {
         console.error('Error deleting documents:', error);
-        showNotification('❌ Network error during deletion', 'error');
+        showNotification('❌ Network error during deletion', 'error', false);
     }
 }
 
 // Refresh document list while preserving current filters
 async function refreshDocumentList() {
-    showNotification('🔄 Refreshing document list...', 'info');
+    showNotification('🔄 Refreshing document list...', 'info', 3000);
     
     // Get current filter state before refreshing
     const currentSearchTerm = document.getElementById('document-search')?.value || '';
