@@ -583,9 +583,7 @@ class SQLiteOperations:
             cursor = conn.cursor()
         
         try:
-            logger.info(f"Looking for {len(chunk_ids)} chunks in database. Sample IDs: {chunk_ids[:3]}...")
-            
-            # Get chunks data
+            # Get chunks data (optimized - no verbose logging)
             placeholders = ','.join(['?' for _ in chunk_ids])
             cursor.execute(f'''
                 SELECT c.chunk_id, c.document_id, c.filename, c.chunk_index, c.content,
@@ -599,7 +597,6 @@ class SQLiteOperations:
             ''', chunk_ids)
             
             results = cursor.fetchall()
-            logger.info(f"Database query returned {len(results)} rows for {len(chunk_ids)} chunk IDs")
             
             # Debug: Check if any chunks exist at all
             if len(results) == 0:

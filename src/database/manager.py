@@ -181,61 +181,30 @@ class DatabaseManager:
             List of enhanced search results with metadata
         """
         try:
-            # ===== DEBUG LOGGING: ENHANCED SEARCH ENTRY =====
-            logger.info("[STEP] DatabaseManager.enhanced_search_with_metadata() - ENTRY POINT")
-            logger.info(f"[PARAMS] Parameters:")
-            logger.info(f"   - user_id: '{user_id}'")
-            logger.info(f"   - filters: {filters}")
-            logger.info(f"   - top_k: {top_k}")
-            logger.info(f"   - query_embedding shape: {query_embedding.shape}")
+            start_time = datetime.now()
             
-            # Get initial vector search results
-            logger.info(f"[STEP] Step 1: Calling vector search for {top_k * 2} results...")
+            # Get initial vector search results (optimized - no verbose logging)
             vector_results = self.search_similar_chunks(query_embedding, top_k * 2)
             
-            logger.info(f"[STATS] Vector search returned: {len(vector_results) if vector_results else 0} raw results")
-            
             if not vector_results:
-                logger.error("[ERROR] VECTOR SEARCH RETURNED ZERO RESULTS!")
-                logger.error("   -> This means FAISS search itself is failing")
-                logger.error("   -> Check FAISS index and ID mappings")
+                logger.error("Vector search failed - no results found")
                 return []
             
-            # Get chunk data from SQLite
-            logger.info("[STEP] Step 2: Converting vector results to chunk data...")
+            # Get chunk data from SQLite  
             chunk_ids = [chunk_id for chunk_id, _ in vector_results]
-            logger.info(f"[LIST] Chunk IDs from vector search: {chunk_ids[:5]}... (showing first 5 of {len(chunk_ids)})")
-            
             chunks = self.get_chunks_by_ids(chunk_ids)
-            logger.info(f"[DATA] Retrieved {len(chunks) if chunks else 0} chunks from SQLite for {len(chunk_ids)} chunk IDs")
             
-            # Validate chunk ID synchronization
+            # Validate synchronization (only log if there are issues)
             if chunks and len(chunks) != len(chunk_ids):
-                retrieved_chunk_ids = [getattr(chunk, 'chunk_id', '') for chunk in chunks]
-                missing_chunk_ids = set(chunk_ids) - set(retrieved_chunk_ids)
-                logger.warning(f"[SYNC_WARNING] Vector/SQL mismatch detected:")
-                logger.warning(f"   - Vector search found: {len(chunk_ids)} chunk IDs")
-                logger.warning(f"   - SQLite returned: {len(chunks)} chunks")
-                logger.warning(f"   - Missing chunk IDs: {list(missing_chunk_ids)[:5]}... (showing first 5)")
-                logger.warning("   -> This suggests FAISS index contains stale chunk IDs")
+                logger.warning(f"Database sync issue: Vector found {len(chunk_ids)} chunks, SQLite returned {len(chunks)}")
             
             if not chunks:
-                logger.error("[ERROR] NO CHUNKS RETRIEVED FROM DATABASE!")
-                logger.error("   -> Vector search found chunk IDs but SQLite returned no data")
-                logger.error("   -> This indicates database sync issues")
+                logger.error("Database query failed - no chunks retrieved")
                 return []
             
-            # Debug: Check user IDs in chunks
-            logger.info("[STEP] Step 3: Analyzing user ID filtering...")
-            chunk_user_ids = set(chunk.user_id for chunk in chunks if hasattr(chunk, 'user_id'))
-            logger.info(f"[USERS] User IDs found in chunks: {chunk_user_ids}")
-            logger.info(f"[USER] Query user ID: '{user_id}'")
-            
-            # Create results with scores
-            logger.info("[STEP] Step 4: Applying user ID filtering...")
+            # Apply user filtering and create results
             enhanced_results = []
             score_map = {chunk_id: score for chunk_id, score in vector_results}
-            
             user_filter_passed = 0
             user_filter_failed = 0
             
@@ -269,31 +238,16 @@ class DatabaseManager:
                 logger.info(f"[STATS] Metadata filtering: {results_before_metadata} -> {results_after_metadata} chunks")
                 
                 if results_after_metadata == 0 and results_before_metadata > 0:
-                    logger.error("[ERROR] METADATA FILTERS ELIMINATED ALL RESULTS!")
-                    logger.error("   -> This is likely the cause of 'no relevant information' responses")
-                    logger.error(f"   -> Problematic filters: {filters}")
-            else:
-                logger.info("[STEP] Step 5: No metadata filters to apply")
+                    logger.error(f"Metadata filters eliminated all results: {filters}")
             
             # Sort by similarity score and limit results
-            logger.info("[STEP] Step 6: Sorting and limiting results...")
             enhanced_results.sort(key=lambda x: x['similarity_score'], reverse=True)
             final_results = enhanced_results[:top_k]
             
-            logger.info(f"[STATS] FINAL ENHANCED SEARCH RESULTS:")
-            logger.info(f"   - Total results before limit: {len(enhanced_results)}")
-            logger.info(f"   - Final results returned: {len(final_results)}")
-            
-            if final_results:
-                logger.info("[SUCCESS] Enhanced search successful!")
-                # Show top 3 results for debugging
-                for i, result in enumerate(final_results[:3]):
-                    chunk = result.get('chunk', {})
-                    score = result.get('similarity_score', 0.0)
-                    chunk_id = getattr(chunk, 'chunk_id', 'unknown') if hasattr(chunk, 'chunk_id') else chunk.get('chunk_id', 'unknown')
-                    logger.info(f"   Result {i+1}: Chunk {chunk_id}, Score: {score:.4f}")
-            else:
-                logger.error("[ERROR] ENHANCED SEARCH RETURNED ZERO FINAL RESULTS!")
+            # Single optimized log line
+            processing_time = (datetime.now() - start_time).total_seconds()
+            logger.info(f"Search completed: {len(final_results)} results in {processing_time:.3f}s", 
+                       extra={'user_id': user_id})
             
             return final_results
             
@@ -305,16 +259,9 @@ class DatabaseManager:
         """Apply metadata filters to search results"""
         filtered_results = []
         
-        # Debug logging
-        logger.info(f"Applying metadata filters: {filters}")
-        logger.info(f"Total search results before filtering: {len(search_results)}")
-        
-        
+        # Optimized - only log if there are issues
         for result in search_results:
             chunk = result['chunk']
-            
-            # Debug logging for each chunk
-            logger.info(f"Chunk {chunk.chunk_id}: project_id={getattr(chunk, 'project_id', 'None')}, meeting_id={getattr(chunk, 'meeting_id', 'None')}")
             
             # Apply filters
             if filters.get('date_range'):

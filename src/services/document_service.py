@@ -14,6 +14,9 @@ from src.models.document import MeetingDocument, UploadJob
 
 logger = logging.getLogger(__name__)
 
+# Get specialized logger for file operations tracking
+file_operations_logger = logging.getLogger('meetingsai.activity.file_operations')
+
 # Simple tracking for active operations
 _active_uploads = set()
 _upload_lock = threading.Lock()
@@ -142,6 +145,12 @@ class DocumentService:
             
             project_id = self.db_manager.create_project(user_id, project_name.strip(), description.strip())
             logger.info(f"New project created: {project_name} ({project_id}) for user {user_id}")
+            
+            # Log file operation activity
+            file_operations_logger.info(
+                f"PROJECT_CREATED | PROJECT_NAME: {project_name} | PROJECT_ID: {project_id}",
+                extra={'user_id': user_id}
+            )
             
             return True, 'Project created successfully', project_id, None
             
@@ -423,6 +432,12 @@ class DocumentService:
                     
                     worker_count = self._get_worker_count()
                     logger.info(f"Starting upload with {worker_count} workers for user {user_id}")
+                    
+                    # Log file upload activity
+                    file_operations_logger.info(
+                        f"UPLOAD_STARTED | FILE_COUNT: {len(file_list)} | WORKER_COUNT: {worker_count}",
+                        extra={'user_id': user_id}
+                    )
                     
                     self.processor.process_files_batch_async(
                         file_list,
