@@ -41,14 +41,16 @@ except ImportError as e:
 # Ensure logs directory exists
 os.makedirs('logs', exist_ok=True)
 
-# Configure logging
+# Configure logging for both flask_app and meeting_processor
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler('logs/flask_app.log'),
+        logging.FileHandler('logs/meeting_processor.log'),
         logging.StreamHandler()
-    ]
+    ],
+    force=True  # Force reconfiguration to ensure logging works properly
 )
 logger = logging.getLogger(__name__)
 

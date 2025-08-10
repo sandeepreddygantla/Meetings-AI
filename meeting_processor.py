@@ -69,15 +69,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # Ensure logs directory exists
 os.makedirs('logs', exist_ok=True)
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('logs/meeting_processor.log'),
-        logging.StreamHandler()
-    ]
-)
+# Logging will be configured by flask_app.py when imported
+# This avoids duplicate logging configuration conflicts
 logger = logging.getLogger(__name__)
 
 # API key will be checked when llm/embedding_model are used, not at module import

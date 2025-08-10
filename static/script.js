@@ -4756,7 +4756,9 @@ async function loadDocumentManagementData() {
         }
 
         if (projectsData.success) {
-            populateProjectFilter(projectsData.projects || []);
+            // Update global availableProjects for proper project name resolution
+            availableProjects = projectsData.projects || [];
+            populateProjectFilter(availableProjects);
         }
 
         // Hide loading indicator
@@ -4826,7 +4828,7 @@ function renderDocumentList(documents) {
             // Using project name from document
         } else if (doc.project_id && doc.project_id !== 'default') {
             // Try to find project name from availableProjects if project_name is missing
-            const project = window.availableProjects?.find(p => p.project_id === doc.project_id);
+            const project = availableProjects?.find(p => p.project_id === doc.project_id);
             projectName = project ? project.project_name : `Project ${doc.project_id}`;
             // Project name resolved from ID
         } else if (doc.project_id === 'default' || !doc.project_id) {

@@ -628,6 +628,10 @@ class DatabaseManager:
         """Get all documents for a specific project"""
         return self.sqlite_ops.get_project_documents(project_id, user_id)
     
+    def get_document_by_id(self, document_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific document by its ID"""
+        return self.sqlite_ops.get_document_metadata(document_id)
+    
     # Backward Compatibility Properties
     @property
     def index(self):

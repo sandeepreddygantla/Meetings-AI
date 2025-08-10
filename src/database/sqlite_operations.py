@@ -2062,3 +2062,62 @@ class SQLiteOperations:
         except Exception as e:
             logger.error(f"Error getting deleted documents: {e}")
             return []
+    
+    def get_documents_with_metadata(self, user_id: str, limit: int = None) -> List[Dict[str, Any]]:
+        """Get documents with comprehensive metadata for enhanced processing"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            query = '''
+                SELECT d.document_id, d.filename, d.date, d.title, d.content_summary,
+                       d.main_topics, d.past_events, d.future_actions, d.participants,
+                       d.chunk_count, d.file_size, d.user_id, d.project_id, d.meeting_id,
+                       d.folder_path, d.created_at,
+                       p.project_name, m.meeting_name
+                FROM documents d
+                LEFT JOIN projects p ON d.project_id = p.project_id
+                LEFT JOIN meetings m ON d.meeting_id = m.meeting_id
+                WHERE d.user_id = ? AND (d.is_deleted IS NULL OR d.is_deleted = 0)
+                ORDER BY d.date DESC, d.created_at DESC
+            '''
+            
+            params = [user_id]
+            if limit:
+                query += ' LIMIT ?'
+                params.append(limit)
+            
+            cursor.execute(query, params)
+            results = cursor.fetchall()
+            conn.close()
+            
+            documents = []
+            for row in results:
+                doc = {
+                    'document_id': row[0],
+                    'filename': row[1],
+                    'date': row[2],
+                    'title': row[3] or 'Untitled',
+                    'content_summary': row[4] or '',
+                    'main_topics': self._safe_json_loads(row[5]),
+                    'past_events': self._safe_json_loads(row[6]),
+                    'future_actions': self._safe_json_loads(row[7]),
+                    'participants': self._safe_json_loads(row[8]),
+                    'chunk_count': row[9] or 0,
+                    'file_size': row[10] or 0,
+                    'user_id': row[11],
+                    'project_id': row[12],
+                    'meeting_id': row[13],
+                    'folder_path': row[14],
+                    'created_at': row[15],
+                    'project_name': row[16],
+                    'meeting_name': row[17]
+                }
+                documents.append(doc)
+            
+            logger.info(f"Retrieved {len(documents)} documents with metadata for user {user_id}")
+            return documents
+            
+        except Exception as e:
+            logger.error(f"Error getting documents with metadata: {e}")
+            return []

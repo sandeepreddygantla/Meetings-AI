@@ -47,7 +47,7 @@ class DocumentService:
     
     def get_user_documents(self, user_id: str) -> Tuple[bool, List[Dict[str, Any]], str]:
         """
-        Get all documents for a user.
+        Get all documents for a user with enriched project information.
         
         Args:
             user_id: User ID
@@ -57,7 +57,39 @@ class DocumentService:
         """
         try:
             documents = self.db_manager.get_all_documents(user_id)
-            return True, documents, f"Retrieved {len(documents)} documents"
+            
+            # Convert MeetingDocument objects to dictionaries and enrich with project names
+            enriched_documents = []
+            projects = self.db_manager.get_user_projects(user_id)
+            
+            # Create project lookup dictionary
+            project_lookup = {project.project_id: project.project_name for project in projects}
+            
+            for doc in documents:
+                # Convert dataclass to dictionary
+                doc_dict = {
+                    'document_id': doc.document_id,
+                    'filename': doc.filename,
+                    'date': doc.date.isoformat() if doc.date else None,
+                    'title': doc.title,
+                    'content_summary': doc.content_summary,
+                    'chunk_count': doc.chunk_count,
+                    'file_size': doc.file_size,
+                    'user_id': doc.user_id,
+                    'project_id': doc.project_id,
+                    'meeting_id': doc.meeting_id,
+                    'folder_path': doc.folder_path
+                }
+                
+                # Add project name
+                if doc.project_id:
+                    doc_dict['project_name'] = project_lookup.get(doc.project_id, 'Unknown Project')
+                else:
+                    doc_dict['project_name'] = 'Default Project'
+                
+                enriched_documents.append(doc_dict)
+            
+            return True, enriched_documents, f"Retrieved {len(enriched_documents)} documents"
         except Exception as e:
             logger.error(f"Error getting user documents: {e}")
             return False, [], f"Error retrieving documents: {str(e)}"

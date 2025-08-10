@@ -403,3 +403,45 @@ class VectorOperations:
         """No-op method for backward compatibility - not needed in simplified architecture"""
         logger.info("Chunk metadata rebuild not needed - using simplified IndexFlatIP")
         pass
+    
+    def get_deletion_stats(self) -> Dict[str, Any]:
+        """Get deletion and vector statistics for monitoring"""
+        try:
+            stats = {
+                'total_vectors': self.index.ntotal if self.index else 0,
+                'dimension': self.dimension,
+                'index_type': type(self.index).__name__ if self.index else None,
+                'index_path': self.index_path,
+                'index_exists': os.path.exists(self.index_path) if self.index_path else False,
+                'cache_stats': self.get_cache_stats(),
+                'timestamp': time.time()
+            }
+            
+            # Add file size information
+            if self.index_path and os.path.exists(self.index_path):
+                try:
+                    file_size = os.path.getsize(self.index_path)
+                    stats['index_file_size'] = file_size
+                    stats['index_file_size_mb'] = round(file_size / (1024 * 1024), 2)
+                except OSError:
+                    stats['index_file_size'] = 0
+                    stats['index_file_size_mb'] = 0.0
+            else:
+                stats['index_file_size'] = 0
+                stats['index_file_size_mb'] = 0.0
+            
+            # Add metadata entries (for compatibility)
+            stats['metadata_entries'] = stats['total_vectors']  # In simplified architecture, 1:1 mapping
+            
+            logger.info(f"Retrieved deletion stats: {stats['total_vectors']} vectors, {stats['index_file_size_mb']} MB")
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Error getting deletion stats: {e}")
+            return {
+                'total_vectors': 0,
+                'dimension': self.dimension,
+                'index_type': None,
+                'error': str(e),
+                'timestamp': time.time()
+            }
