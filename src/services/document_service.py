@@ -4,6 +4,7 @@ Handles document management, processing, and metadata operations.
 """
 import os
 import logging
+import threading
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 from werkzeug.utils import secure_filename
@@ -12,6 +13,13 @@ from src.database.manager import DatabaseManager
 from src.models.document import MeetingDocument, UploadJob
 
 logger = logging.getLogger(__name__)
+
+# Get specialized logger for file operations tracking
+file_operations_logger = logging.getLogger('meetingsai.activity.file_operations')
+
+# Simple tracking for active operations
+_active_uploads = set()
+_upload_lock = threading.Lock()
 
 
 class DocumentService:
@@ -28,9 +36,21 @@ class DocumentService:
         self.db_manager = db_manager
         self.processor = processor  # For backwards compatibility with existing processor methods
     
+    def _get_worker_count(self):
+        """Get optimal worker count based on current load"""
+        with _upload_lock:
+            active_count = len(_active_uploads)
+            
+        if active_count == 0:
+            return 4  # Full speed for single user
+        elif active_count == 1:
+            return 3  # Balanced for two users
+        else:
+            return 2  # Conservative for multiple users
+    
     def get_user_documents(self, user_id: str) -> Tuple[bool, List[Dict[str, Any]], str]:
         """
-        Get all documents for a user.
+        Get all documents for a user with enriched project information.
         
         Args:
             user_id: User ID
@@ -40,7 +60,39 @@ class DocumentService:
         """
         try:
             documents = self.db_manager.get_all_documents(user_id)
-            return True, documents, f"Retrieved {len(documents)} documents"
+            
+            # Convert MeetingDocument objects to dictionaries and enrich with project names
+            enriched_documents = []
+            projects = self.db_manager.get_user_projects(user_id)
+            
+            # Create project lookup dictionary
+            project_lookup = {project.project_id: project.project_name for project in projects}
+            
+            for doc in documents:
+                # Convert dataclass to dictionary
+                doc_dict = {
+                    'document_id': doc.document_id,
+                    'filename': doc.filename,
+                    'date': doc.date.isoformat() if doc.date else None,
+                    'title': doc.title,
+                    'content_summary': doc.content_summary,
+                    'chunk_count': doc.chunk_count,
+                    'file_size': doc.file_size,
+                    'user_id': doc.user_id,
+                    'project_id': doc.project_id,
+                    'meeting_id': doc.meeting_id,
+                    'folder_path': doc.folder_path
+                }
+                
+                # Add project name
+                if doc.project_id:
+                    doc_dict['project_name'] = project_lookup.get(doc.project_id, 'Unknown Project')
+                else:
+                    doc_dict['project_name'] = 'Default Project'
+                
+                enriched_documents.append(doc_dict)
+            
+            return True, enriched_documents, f"Retrieved {len(enriched_documents)} documents"
         except Exception as e:
             logger.error(f"Error getting user documents: {e}")
             return False, [], f"Error retrieving documents: {str(e)}"
@@ -93,6 +145,12 @@ class DocumentService:
             
             project_id = self.db_manager.create_project(user_id, project_name.strip(), description.strip())
             logger.info(f"New project created: {project_name} ({project_id}) for user {user_id}")
+            
+            # Log file operation activity
+            file_operations_logger.info(
+                f"PROJECT_CREATED | PROJECT_NAME: {project_name} | PROJECT_ID: {project_id}",
+                extra={'user_id': user_id}
+            )
             
             return True, 'Project created successfully', project_id, None
             
@@ -368,16 +426,33 @@ class DocumentService:
             def process_in_background():
                 """Background processing function"""
                 try:
+                    # Track this upload and get optimal worker count
+                    with _upload_lock:
+                        _active_uploads.add(user_id)
+                    
+                    worker_count = self._get_worker_count()
+                    logger.info(f"Starting upload with {worker_count} workers for user {user_id}")
+                    
+                    # Log file upload activity
+                    file_operations_logger.info(
+                        f"UPLOAD_STARTED | FILE_COUNT: {len(file_list)} | WORKER_COUNT: {worker_count}",
+                        extra={'user_id': user_id}
+                    )
+                    
                     self.processor.process_files_batch_async(
                         file_list,
                         user_id,
                         project_id,
                         meeting_id,
-                        max_workers=2,  # Limit concurrent processing
+                        max_workers=worker_count,
                         job_id=job_id  # Pass existing job_id
                     )
                 except Exception as e:
                     logger.error(f"Background processing error: {e}")
+                finally:
+                    # Clean up tracking
+                    with _upload_lock:
+                        _active_uploads.discard(user_id)
             
             # Start background processing
             thread = threading.Thread(target=process_in_background)

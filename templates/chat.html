@@ -51,6 +51,7 @@
                 </div>
             </div>
 
+
             <div class="sidebar-footer">
                 <div class="user-profile" onclick="showUserProfile()">
                     <div class="user-avatar" id="user-avatar">U</div>
@@ -411,6 +412,7 @@
     <script src="{{ url_for('static', filename='js/modules/mentions.js') }}"></script>
     
     <!-- Main Application Script -->
-    <script src="{{ url_for('static', filename='script.js') }}"></script>
+    <!-- Main Application Script with Performance Optimization -->
+    <script src="{{ url_for('static', filename='script.js') }}" defer></script>
 </body>
 </html>

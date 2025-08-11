@@ -47,9 +47,18 @@ src/database/vector_operations.py.backup
 meeting_documents.db
 sessions.db
 Azure_Hybrid_Architecture_Cost_Analysis.md
+Performance_Optimization_Architecture_Recommendations.md
+sessions.db
+PERFORMANCE_OPTIMIZATIONS.md
+meeting_documents.db-shm
+meeting_documents.db-wal
 IIS_Phase1_Configuration_Steps.md
 IIS_Troubleshooting_Analysis.md
-Performance_Optimization_Architecture_Recommendations.md
-PERFORMANCE_OPTIMIZATIONS.md
+.gitignore
+meeting_documents.db
 Phase1_Verification_Plan.md
-meetings-ai-architecture.xml
+web.config.backup
+
+# Local databases
+*.db
+*.sqlite*

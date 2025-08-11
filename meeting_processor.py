@@ -21,11 +21,37 @@ import hashlib
 import httpx
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# Load environment variables with robust path detection
+def load_environment_variables():
+    """Load environment variables with multiple fallback paths for IIS compatibility"""
+    env_loaded = False
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Try multiple .env file locations
+    env_paths = [
+        os.path.join(current_dir, '.env'),  # Same directory as this script
+        '.env',  # Current working directory
+        os.path.join(os.getcwd(), '.env'),  # Explicit current working directory
+    ]
+    
+    for env_path in env_paths:
+        if os.path.exists(env_path):
+            load_dotenv(env_path, override=True)
+            logging.info(f"Successfully loaded environment variables from: {env_path}")
+            env_loaded = True
+            break
+    
+    if not env_loaded:
+        logging.warning(f"No .env file found. Searched paths: {env_paths}")
+        logging.info("Environment variables will be loaded from system environment")
+    
+    return env_loaded
 
-# Configure tiktoken cache
-tiktoken_cache_dir = os.path.abspath("tiktoken_cache")
+# Load environment variables
+load_environment_variables()
+
+# Configure tiktoken cache with absolute path
+tiktoken_cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tiktoken_cache")
 os.environ["TIKTOKEN_CACHE_DIR"] = tiktoken_cache_dir
 
 # Verify tiktoken cache exists (optional check)
@@ -37,23 +63,14 @@ else:
     logging.warning("Tiktoken cache directory not found - will be created automatically on first use")
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dotenv import load_dotenv
 
-# Force reload of environment variables
-load_dotenv(override=True)
+# Environment variables already loaded above
 
 # Ensure logs directory exists
 os.makedirs('logs', exist_ok=True)
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('logs/meeting_processor.log'),
-        logging.StreamHandler()
-    ]
-)
+# Logging will be configured by flask_app.py when imported
+# This avoids duplicate logging configuration conflicts
 logger = logging.getLogger(__name__)
 
 # API key will be checked when llm/embedding_model are used, not at module import
@@ -151,18 +168,100 @@ def get_embedding_model(access_token: str = None):
         logger.error(f"Error creating embedding model: {e}")
         return None
 
-# Initialize global variables (keeping same structure)
-# These will be None if API keys are not available, but won't crash the module load
-try:
-    access_token = get_access_token()
-    embedding_model = get_embedding_model(access_token)
-    llm = get_llm(access_token)
-    logger.info("LLM and embedding model initialized successfully")
-except Exception as e:
-    logger.warning(f"Could not initialize LLM/embedding model at startup: {e}")
-    access_token = None
-    embedding_model = None
-    llm = None
+# Global variables for lazy loading
+access_token = None
+embedding_model = None
+llm = None
+_clients_initialized = False
+_initialization_lock = threading.Lock()
+
+def ensure_ai_clients_initialized(retry_count=3):
+    """
+    Lazy initialization of AI clients with retry logic and enhanced error handling.
+    Thread-safe implementation to prevent multiple initializations.
+    
+    Args:
+        retry_count: Number of retry attempts for initialization
+    """
+    global access_token, embedding_model, llm, _clients_initialized
+    
+    if _clients_initialized:
+        return True
+    
+    with _initialization_lock:
+        # Double-check pattern to prevent race conditions
+        if _clients_initialized:
+            return True
+        
+        last_error = None
+        for attempt in range(retry_count):
+            try:
+                logger.info(f"Initializing AI clients (attempt {attempt + 1}/{retry_count})...")
+                
+                # Reload environment variables on retry attempts
+                if attempt > 0:
+                    logger.info("Reloading environment variables...")
+                    load_environment_variables()
+                
+                # Check for API key availability
+                api_key = os.getenv("OPENAI_API_KEY")
+                azure_client_id = os.getenv("AZURE_CLIENT_ID")
+                
+                if not api_key and not azure_client_id:
+                    error_msg = "No API configuration found. Check OPENAI_API_KEY or Azure credentials."
+                    logger.error(error_msg)
+                    if attempt == retry_count - 1:  # Last attempt
+                        return False
+                    continue
+                
+                # Initialize clients
+                access_token = get_access_token()
+                embedding_model = get_embedding_model(access_token)
+                llm = get_llm(access_token)
+                
+                if embedding_model is None or llm is None:
+                    error_msg = f"Failed to initialize AI clients - embedding_model: {embedding_model is not None}, llm: {llm is not None}"
+                    logger.error(error_msg)
+                    if attempt < retry_count - 1:
+                        logger.info("Retrying initialization in 2 seconds...")
+                        time.sleep(2)
+                        continue
+                    else:
+                        return False
+                
+                _clients_initialized = True
+                logger.info("✅ AI clients initialized successfully via lazy loading")
+                return True
+                
+            except Exception as e:
+                last_error = e
+                logger.error(f"❌ Error during AI client initialization (attempt {attempt + 1}): {e}")
+                if attempt < retry_count - 1:
+                    logger.info("Retrying initialization in 2 seconds...")
+                    time.sleep(2)
+                else:
+                    logger.error(f"Failed to initialize AI clients after {retry_count} attempts. Last error: {last_error}")
+                    return False
+        
+        return False
+
+def get_llm_safe():
+    """Get LLM client with lazy initialization."""
+    if not ensure_ai_clients_initialized():
+        return None
+    return llm
+
+def get_embedding_model_safe():
+    """Get embedding model with lazy initialization."""
+    if not ensure_ai_clients_initialized():
+        return None
+    return embedding_model
+
+def get_access_token_safe():
+    """Get access token with lazy initialization."""
+    if not ensure_ai_clients_initialized():
+        return None
+    return access_token
 
 @dataclass
 class DocumentChunk:
@@ -2068,10 +2167,7 @@ class EnhancedMeetingDocumentProcessor:
             chunk_overlap: Overlap between chunks  
             db_manager: External database manager instance (if None, creates new one)
         """
-        global llm, embedding_model, access_token
-        self.llm = llm
-        self.embedding_model = embedding_model
-        self.access_token = access_token
+        # Don't initialize AI clients here - use lazy loading via safe getters
         self.token_expiry = datetime.now() + timedelta(hours=1)
         
         # Text splitter for chunking
@@ -2092,6 +2188,21 @@ class EnhancedMeetingDocumentProcessor:
             logger.info("Created new database manager")
         
         logger.info("Enhanced Meeting Document Processor initialized with OpenAI")
+    
+    @property
+    def llm(self):
+        """Get LLM client using lazy loading"""
+        return get_llm_safe()
+    
+    @property
+    def embedding_model(self):
+        """Get embedding model using lazy loading"""
+        return get_embedding_model_safe()
+    
+    @property
+    def access_token(self):
+        """Get access token using lazy loading"""
+        return get_access_token_safe()
     
     def _detect_timeframe_from_query(self, query: str) -> Optional[str]:
         """Enhanced timeframe detection from natural language query"""
@@ -2242,29 +2353,21 @@ class EnhancedMeetingDocumentProcessor:
     def refresh_clients(self):
         """Refresh OpenAI clients with new API key (if needed)"""
         try:
-            global access_token, llm, embedding_model
+            global access_token, llm, embedding_model, _clients_initialized
 
             if hasattr(self, 'token_expiry') and datetime.now() >= self.token_expiry - timedelta(minutes=5):
                 logger.info("Refreshing access token...")
-                access_token = get_access_token()
-                self.access_token = access_token
+                # Force re-initialization by resetting the flag
+                _clients_initialized = False
+                ensure_ai_clients_initialized()
                 self.token_expiry = datetime.now() + timedelta(hours=1)
-
-                llm = get_llm(access_token)
-                embedding_model = get_embedding_model(access_token)
-                self.llm = llm
-                self.embedding_model = embedding_model
             else:
                 # Force refresh even if not expired
                 logger.info("Force refreshing access token...")
-                access_token = get_access_token()
-                self.access_token = access_token
+                # Force re-initialization by resetting the flag
+                _clients_initialized = False
+                ensure_ai_clients_initialized()
                 self.token_expiry = datetime.now() + timedelta(hours=1)
-
-                llm = get_llm(access_token)
-                embedding_model = get_embedding_model(access_token)
-                self.llm = llm
-                self.embedding_model = embedding_model
 
             logger.info("OpenAI clients refreshed successfully")
         except Exception as e:
@@ -3251,39 +3354,25 @@ Examples:
         """Answer user query using enhanced intelligence-aware search and context reconstruction"""
         
         try:
-            # ===== DEBUG LOGGING: MAIN PROCESSOR ENTRY =====
-            logger.info("[PROCESSOR] MeetingProcessor.answer_query_with_intelligence() - ENTRY POINT")
-            logger.info("=" * 80)
-            logger.info(f"[PROCESSING] QUERY: '{query}'")
-            logger.info(f"[USER] User ID: {user_id}")
-            logger.info(f"[PARAMS] Parameters:")
-            logger.info(f"   - document_ids: {document_ids}")
-            logger.info(f"   - project_id: {project_id}")
-            logger.info(f"   - meeting_id: {meeting_id}")
-            logger.info(f"   - meeting_ids: {meeting_ids}")
-            logger.info(f"   - date_filters: {date_filters}")
-            logger.info(f"   - folder_path: {folder_path}")
-            logger.info(f"   - context_limit: {context_limit}")
-            logger.info("=" * 80)
-            
             # Generate query embedding
-            logger.info("[STEPA] Checking embedding model availability...")
             if self.embedding_model is None:
-                logger.error("[CRITICAL] Embedding model not available")
-                return "Sorry, the system is not properly configured for queries.", ""
+                if ensure_ai_clients_initialized(retry_count=2):
+                    pass  # embedding_model is accessed via property, so it will get the fresh value
+                else:
+                    logger.error("Embedding model not available")
+                    return "Sorry, the system is not properly configured for queries. Please try again.", ""
             
-            logger.info("[OK] Embedding model available - generating query embedding...")
+            if self.embedding_model is None:
+                logger.error("Embedding model still not available")
+                return "Sorry, the system is not properly configured for queries. Please try again.", ""
+            
             query_embedding = self.embedding_model.embed_query(query)
             query_vector = np.array(query_embedding)
-            logger.info(f"[EMBEDDING] Query embedding generated: {query_vector.shape} dimensions")
             
             # Analyze query to determine filters
-            logger.info("[STEPB] Analyzing query for automatic filters...")
             search_filters = self._analyze_query_for_filters(query)
-            logger.info(f"[AUTO] Automatic filters detected: {search_filters}")
             
             # Apply user context filters
-            logger.info("[STEPC] Applying user-provided filters...")
             original_filters = dict(search_filters)  # Keep copy for comparison
             
             if meeting_ids:
@@ -4372,7 +4461,7 @@ Document: {chunk['filename']} ({chunk['date']})
 
     def process_files_batch_async(self, files: List[Dict], user_id: str, 
                                  project_id: str = None, meeting_id: str = None, 
-                                 max_workers: int = 3, job_id: str = None) -> Dict:
+                                 max_workers: int = 5, job_id: str = None) -> Dict:
         """Process multiple files asynchronously with threading"""
         if not files:
             return {'success': False, 'error': 'No files provided'}

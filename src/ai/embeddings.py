@@ -6,7 +6,7 @@ import logging
 import numpy as np
 from typing import List, Optional, Dict, Any, Tuple
 
-from src.ai.llm_client import get_embedding_client, generate_embeddings
+from meeting_processor import get_embedding_model_safe as get_embedding_client, embedding_model
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,11 @@ class EmbeddingService:
                 logger.error("Embedding client not available")
                 return None
             
-            embeddings = generate_embeddings([text])
+            embedding_client = get_embedding_client()
+            if embedding_client:
+                embeddings = embedding_client.embed_documents([text])
+            else:
+                embeddings = []
             if embeddings and len(embeddings) > 0:
                 return embeddings[0]
             else:
@@ -74,7 +78,11 @@ class EmbeddingService:
                 logger.error("Embedding client not available")
                 return None
             
-            embeddings = generate_embeddings(texts)
+            embedding_client = get_embedding_client()
+            if embedding_client:
+                embeddings = embedding_client.embed_documents(texts)
+            else:
+                embeddings = []
             return embeddings
             
         except Exception as e:

@@ -13,6 +13,15 @@ from src.ai.enhanced_prompts import EnhancedPromptManager
 
 logger = logging.getLogger(__name__)
 
+# Get specialized loggers for user activity tracking
+def get_activity_logger(activity_type: str):
+    """Get activity logger for specific type."""
+    return logging.getLogger(f'meetingsai.activity.{activity_type}')
+
+user_queries_logger = get_activity_logger('user_queries')
+ai_responses_logger = get_activity_logger('ai_responses')
+performance_logger = get_activity_logger('performance')
+
 
 class ChatService:
     """Service for handling chat and AI query operations."""
@@ -63,9 +72,23 @@ class ChatService:
         Returns:
             Tuple of (response, follow_up_questions, timestamp)
         """
+        # Start performance timing
+        start_time = datetime.now()
+        
         try:
+            # ===== ENHANCED USER ACTIVITY LOGGING =====
+            # Log user query for activity tracking
+            user_queries_logger.info(
+                f"QUERY_START | MESSAGE: {message[:200]}{'...' if len(message) > 200 else ''} | "
+                f"PROJECT_ID: {project_id} | DOC_COUNT: {len(document_ids) if document_ids else 0}",
+                extra={'user_id': user_id}
+            )
+            
             # ===== DEBUG LOGGING: CHAT SERVICE ENTRY =====
-            logger.info("[SERVICE] ChatService.process_chat_query() - ENTRY POINT")
+            logger.info(
+                "[SERVICE] ChatService.process_chat_query() - ENTRY POINT",
+                extra={'user_id': user_id}
+            )
             logger.info(f"[PARAMS] Parameters received:")
             logger.info(f"   - message: '{message}'")
             logger.info(f"   - user_id: {user_id}")
@@ -113,11 +136,52 @@ class ChatService:
                         meeting_ids, date_filters, folder_path
                     )
             
-            timestamp = datetime.now().isoformat()
+            # ===== ENHANCED RESPONSE AND PERFORMANCE LOGGING =====
+            end_time = datetime.now()
+            response_time = (end_time - start_time).total_seconds()
+            timestamp = end_time.isoformat()
+            
+            # Log AI response for activity tracking
+            ai_responses_logger.info(
+                f"RESPONSE_GENERATED | LENGTH: {len(response)} chars | "
+                f"FOLLOWUP_COUNT: {len(follow_up_questions)} | "
+                f"PROCESSING_TIME: {response_time:.2f}s",
+                extra={'user_id': user_id}
+            )
+            
+            # Log performance metrics
+            performance_logger.info(
+                f"CHAT_QUERY_PERFORMANCE | RESPONSE_TIME: {response_time:.2f}s | "
+                f"RESPONSE_LENGTH: {len(response)} | QUERY_LENGTH: {len(message)} | "
+                f"DOC_FILTER_COUNT: {len(document_ids) if document_ids else 0}",
+                extra={'user_id': user_id}
+            )
+            
+            # Log completion in main logger
+            logger.info(
+                f"[COMPLETE] Chat query processed successfully in {response_time:.2f}s",
+                extra={'user_id': user_id}
+            )
+            
             return response, follow_up_questions, timestamp
             
         except Exception as e:
-            logger.error(f"Chat query processing error: {e}")
+            # Calculate error response time
+            error_time = (datetime.now() - start_time).total_seconds()
+            
+            # Enhanced error logging with user context
+            logger.error(
+                f"[ERROR] Chat query processing failed after {error_time:.2f}s: {str(e)}",
+                extra={'user_id': user_id}
+            )
+            
+            # Log error in performance tracker
+            performance_logger.info(
+                f"CHAT_QUERY_ERROR | ERROR_TIME: {error_time:.2f}s | "
+                f"ERROR: {str(e)[:100]} | QUERY_LENGTH: {len(message)}",
+                extra={'user_id': user_id}
+            )
+            
             return f"An error occurred while processing your query: {str(e)}", [], datetime.now().isoformat()
     
     def get_chat_statistics(self, user_id: str) -> Dict[str, Any]:

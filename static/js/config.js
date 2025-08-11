@@ -104,7 +104,7 @@ function updateConfig(serverConfig) {
     // Update other configuration as needed
     Object.assign(window.APP_CONFIG, serverConfig);
     
-    console.log('Configuration updated:', window.APP_CONFIG);
+    // Configuration updated
 }
 
 /**
@@ -117,7 +117,7 @@ function initializeConfig() {
         updateConfig(serverConfig);
     }
     
-    console.log('Configuration initialized:', window.APP_CONFIG);
+    // Configuration initialized
 }
 
 // Initialize on load

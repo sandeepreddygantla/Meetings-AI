@@ -535,13 +535,23 @@ class EnhancedContextManager:
             return ""
     
     def _generate_llm_response(self, prompt: str) -> str:
-        """Generate response using the global LLM instance."""
+        """Generate response using the global LLM instance with fallback initialization."""
         try:
-            from meeting_processor import llm
+            from meeting_processor import llm, ensure_ai_clients_initialized
             
             if llm is None:
-                logger.error("[ERROR] LLM not available")
-                return "I'm sorry, but the AI system is not properly configured. Please check the system settings."
+                logger.warning("[WARNING] LLM not available - attempting fallback initialization...")
+                # Try to initialize AI clients one more time (fallback for IIS Application Initialization issues)
+                if ensure_ai_clients_initialized(retry_count=2):
+                    from meeting_processor import llm  # Re-import after initialization
+                    logger.info("[SUCCESS] Fallback initialization successful")
+                else:
+                    logger.error("[ERROR] Fallback initialization failed - LLM still not available")
+                    return "I'm sorry, but the AI system is not properly configured. Please check the system settings and try again."
+            
+            if llm is None:
+                logger.error("[ERROR] LLM still not available after fallback initialization")
+                return "I'm sorry, but the AI system is not properly configured. Please check the system settings and try again."
             
             from langchain.schema import HumanMessage, SystemMessage
             

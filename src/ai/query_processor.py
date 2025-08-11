@@ -7,7 +7,7 @@ import re
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 
-from src.ai.llm_client import get_llm_client, generate_response
+from meeting_processor import get_llm_safe as get_llm_client, llm
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +216,12 @@ class QueryProcessor:
             Format as a simple list, one question per line.
             """
             
-            follow_up_response = generate_response(prompt)
+            llm_client = get_llm_client()
+            if llm_client:
+                response_obj = llm_client.invoke(prompt)
+                follow_up_response = response_obj.content if hasattr(response_obj, 'content') else str(response_obj)
+            else:
+                follow_up_response = None
             
             if follow_up_response:
                 # Parse questions from response
@@ -731,7 +736,12 @@ class QueryProcessor:
             - **Participants**: [key contributors]
             """
             
-            response = generate_response(summary_prompt)
+            llm_client = get_llm_client()
+            if llm_client:
+                response_obj = llm_client.invoke(summary_prompt)
+                response = response_obj.content if hasattr(response_obj, 'content') else str(response_obj)
+            else:
+                response = None
             return response if response else f"Unable to generate summary for {meeting_name}"
             
         except Exception as e:
@@ -816,7 +826,12 @@ class QueryProcessor:
             Use clear formatting with headers, bullet points, and organized structure to handle this large amount of information effectively.
             """
             
-            response = generate_response(synthesis_prompt)
+            llm_client = get_llm_client()
+            if llm_client:
+                response_obj = llm_client.invoke(synthesis_prompt)
+                response = response_obj.content if hasattr(response_obj, 'content') else str(response_obj)
+            else:
+                response = None
             return response if response else "Unable to generate comprehensive multi-meeting analysis"
             
         except Exception as e:
@@ -850,7 +865,12 @@ class QueryProcessor:
         )
         
         # Generate response
-        response = generate_response(prompt)
+        llm_client = get_llm_client()
+        if llm_client:
+            response_obj = llm_client.invoke(prompt)
+            response = response_obj.content if hasattr(response_obj, 'content') else str(response_obj)
+        else:
+            response = None
         
         if response:
             return self._post_process_response(response)
