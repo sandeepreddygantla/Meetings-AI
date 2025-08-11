@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+  <system.webServer>
+    <!-- Remove WebDAV to avoid blocking REST verbs (from your working config) -->
+    <modules>
+      <remove name="WebDAVModule" />
+      <!-- Don't add compression modules - they may already exist -->
+    </modules>
+    
+    <handlers>
+      <remove name="WebDAV" />
+      <!-- Use your exact working handler configuration -->
+      <add name="FlaskHandler"
+           path="*"
+           verb="*"
+           modules="FastCgiModule"
+           scriptProcessor="C:\inetpub\wwwroot\MeetingsAI\venv\Scripts\python.exe|C:\inetpub\wwwroot\MeetingsAI\venv\Lib\site-packages\wfastcgi.py"
+           resourceType="Unspecified"
+           requireAccess="Script" />
+    </handlers>
+    
+    <!-- Show detailed errors for debugging (from your working config) -->
+    <httpErrors errorMode="Detailed"/>
+    
+    <!-- Security settings for REST API (from your working config) -->
+    <security>
+      <requestFiltering>
+        <requestLimits maxAllowedContentLength="524288000" maxQueryString="32768"/>
+      </requestFiltering>
+    </security>
+    
+    <!-- SAFE PERFORMANCE OPTIMIZATION: Basic static content caching only -->
+    <staticContent>
+      <!-- Cache static files for better performance -->
+      <clientCache cacheControlMode="UseMaxAge" cacheControlMaxAge="24.00:00:00" />
+    </staticContent>
+
+    <!-- SAFE PERFORMANCE OPTIMIZATION: Use IIS default compression (don't configure modules) -->
+    <urlCompression doStaticCompression="true" doDynamicCompression="true" />
+    
+    <!-- HTTP Response Headers (from your working config + safe performance headers) -->
+    <httpProtocol>
+      <customHeaders>
+        <!-- CORS headers (from your working config) -->
+        <add name="Access-Control-Allow-Origin" value="*"/>
+        <add name="Access-Control-Allow-Methods" value="GET,POST,PUT,DELETE,PATCH,OPTIONS"/>
+        <add name="Access-Control-Allow-Headers" value="Content-Type,Authorization,X-Requested-With"/>
+        
+        <!-- SAFE performance headers -->
+        <add name="Vary" value="Accept-Encoding" />
+      </customHeaders>
+    </httpProtocol>
+  </system.webServer>
+  
+  <appSettings>
+    <!-- Flask app entry point (from your working config) -->
+    <add key="WSGI_HANDLER" value="flask_app.app"/>
+    <add key="PYTHONPATH" value="C:\inetpub\wwwroot\MeetingsAI"/>
+  </appSettings>
+  
+  <system.web>
+    <!-- From your working config + minimal safe optimizations -->
+    <httpRuntime maxRequestLength="512000" executionTimeout="3600" enableVersionHeader="false" />
+    <customErrors mode="Off" />
+  </system.web>
+</configuration>

@@ -46,3 +46,10 @@ sessions.db
 src/database/vector_operations.py.backup
 meeting_documents.db
 sessions.db
+Azure_Hybrid_Architecture_Cost_Analysis.md
+IIS_Phase1_Configuration_Steps.md
+IIS_Troubleshooting_Analysis.md
+Performance_Optimization_Architecture_Recommendations.md
+PERFORMANCE_OPTIMIZATIONS.md
+Phase1_Verification_Plan.md
+meetings-ai-architecture.xml
