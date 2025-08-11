@@ -58,3 +58,7 @@ IIS_Troubleshooting_Analysis.md
 meeting_documents.db
 Phase1_Verification_Plan.md
 web.config.backup
+
+# Local databases
+*.db
+*.sqlite*
